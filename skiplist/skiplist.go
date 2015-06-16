@@ -12,11 +12,16 @@
 // Skip lists were first described in Pugh, William (June 1990). "Skip
 // lists: a probabilistic alternative to balanced
 // trees". Communications of the ACM 33 (6): 668–676
+
+// Concurrency added based on https://www.cs.tau.ac.il/~shanir/nir-pubs-web/Papers/OPODIS2006-BA.pdf
 package skiplist
 
 import (
 	"bytes"
 	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // TODO(ryszard):
@@ -28,7 +33,7 @@ import (
 // times is a concern, 1/2 is a better value for p.
 const p = 0.25
 
-const DefaultMaxLevel = 32
+const DefaultMaxLevel = 4
 
 type version struct {
 	ver int64
@@ -38,10 +43,13 @@ type version struct {
 // A node is a container for key-value pairs that are stored in a skip
 // list.
 type node struct {
-	forward  []*node
-	backward *node
-	key      []byte
-	value    []version
+	fullyLinked int32
+	key         []byte
+	value       []version
+	topLayer    int
+	forward     []*node
+	backward    *node
+	lock        sync.Mutex
 }
 
 // next returns the next node in the skip list containing n.
@@ -91,6 +99,14 @@ func (n *node) addValue(ver int64, val []byte) {
 	n.value = append(n.value, version{ver, val})
 }
 
+func (n *node) linked() bool {
+	return atomic.LoadInt32(&n.fullyLinked) == 1
+}
+
+func (n *node) setLinked() {
+	atomic.StoreInt32(&n.fullyLinked, 1)
+}
+
 // A SkipList is a map-like data structure that maintains an ordered
 // collection of key-value pairs. Insertion, lookup, and deletion are
 // all O(log n) operations. A SkipList can efficiently store up to
@@ -105,6 +121,7 @@ func (n *node) addValue(ver int64, val []byte) {
 type SkipList struct {
 	header *node
 	footer *node
+
 	// MaxLevel determines how many items the SkipList can store
 	// efficiently (2^MaxLevel).
 	//
@@ -118,6 +135,35 @@ type SkipList struct {
 	// standard linked list and will not have any of the nice
 	// properties of skip lists (probably not what you want).
 	MaxLevel int
+
+	searches sync.Pool
+}
+
+// NewCustomMap returns a new SkipList that will use lessThan as the
+// comparison function. lessThan should define a linear order on keys
+// you intend to use with the SkipList.
+func New(max int) *SkipList {
+	if max == 0 {
+		max = DefaultMaxLevel
+	}
+
+	sk := &SkipList{
+		header: &node{
+			forward: make([]*node, max+1),
+		},
+		footer:   &node{},
+		MaxLevel: max,
+	}
+
+	sk.searches.New = func() interface{} {
+		return make([]*node, max)
+	}
+
+	for i := 0; i < max; i++ {
+		sk.header.forward[i] = sk.footer
+	}
+
+	return sk
 }
 
 func (s *SkipList) lessThan(key, val []byte) bool {
@@ -198,54 +244,30 @@ func (i *iter) Previous() bool {
 }
 
 func (i *iter) Seek(key []byte) (ok bool) {
-	current := i.current
-	list := i.list
+	preds := i.list.searches.Get().([]*node)
+	succs := i.list.searches.Get().([]*node)
 
-	// If the existing iterator outside of the known key range, we should set the
-	// position back to the beginning of the list.
-	if current == nil {
-		current = list.header
+	defer i.list.searches.Put(preds)
+	defer i.list.searches.Put(succs)
+
+	layer, found := i.list.findNode(key, preds, succs)
+	if !found {
+		layer = 0
 	}
 
-	// If the target key occurs before the current key, we cannot take advantage
-	// of the heretofore spent traversal cost to find it; resetting back to the
-	// beginning is the safest choice.
-	if current.key != nil && list.lessThan(key, current.key) {
-		current = list.header
-	}
+	node := succs[layer]
 
-	// We should back up to the so that we can seek to our present value if that
-	// is requested for whatever reason.
-	if current.backward == nil {
-		current = list.header
-	} else {
-		current = current.backward
-	}
-
-	current = list.getPath(current, nil, key)
-
-	if current == nil {
-		return
-	}
-
-	for {
-		val, ok := current.atLeast(i.ver)
-		if ok {
-			i.current = current
-			i.key = current.key
-			i.value = val
-
-			return true
+	for !node.linked() {
+		if !node.hasNext() {
+			return false
 		}
 
-		if !current.hasNext() {
-			break
-		}
-
-		current = current.next()
+		node = node.next()
 	}
 
-	return false
+	i.current = node
+
+	return i.setValue(i.ver)
 }
 
 func (i *iter) Close() {
@@ -255,71 +277,14 @@ func (i *iter) Close() {
 	i.list = nil
 }
 
-type rangeIterator struct {
-	iter
-	upperLimit []byte
-	lowerLimit []byte
-}
-
-func (i *rangeIterator) Next() bool {
-	for i.current.hasNext() {
-		next := i.current.next()
-
-		if !i.list.lessThan(next.key, i.upperLimit) {
-			return false
-		}
-
-		i.current = i.current.next()
-		i.key = i.current.key
-
-		if val, ok := i.current.atLeast(i.ver); ok {
-			i.value = val
-			return true
-		}
-	}
-
-	return false
-}
-
-func (i *rangeIterator) Previous() bool {
-	for i.current.hasPrevious() {
-		previous := i.current.previous()
-
-		if i.list.lessThan(previous.key, i.lowerLimit) {
-			return false
-		}
-
-		i.current = previous
-		i.key = i.current.key
-
-		if val, ok := i.current.atLeast(i.ver); ok {
-			i.value = val
-			return true
-		}
-	}
-
-	return false
-}
-
-func (i *rangeIterator) Seek(key []byte) (ok bool) {
-	if i.list.lessThan(key, i.lowerLimit) {
-		return
-	} else if !i.list.lessThan(key, i.upperLimit) {
-		return
-	}
-
-	return i.iter.Seek(key)
-}
-
-func (i *rangeIterator) Close() {
-	i.iter.Close()
-	i.upperLimit = nil
-	i.lowerLimit = nil
+func (i *iter) Valid() bool {
+	return i.current != nil
 }
 
 // Iterator returns an Iterator that will go through all elements s.
-func (s *SkipList) Iterator() Iterator {
+func (s *SkipList) Iterator(ver int64) Iterator {
 	return &iter{
+		ver:     ver,
 		current: s.header,
 		list:    s,
 	}
@@ -329,6 +294,7 @@ func (i *iter) setValue(ver int64) bool {
 	for {
 		val, ok := i.current.atLeast(ver)
 		if ok {
+			i.key = i.current.key
 			i.value = val
 			return true
 		}
@@ -364,23 +330,16 @@ func (i *iter) setValueBackward(ver int64) bool {
 // Seek returns a bidirectional iterator starting with the first element whose
 // key is greater or equal to key; otherwise, a nil iterator is returned.
 func (s *SkipList) Seek(ver int64, key []byte) Iterator {
-	current := s.getPath(s.header, nil, key)
-	if current == nil {
+	iter := &iter{
+		ver:  ver,
+		list: s,
+	}
+
+	if iter.Seek(key) {
 		return nil
 	}
 
-	iter := &iter{
-		ver:     ver,
-		current: current,
-		key:     current.key,
-		list:    s,
-	}
-
-	if iter.setValue(ver) {
-		return iter
-	}
-
-	return nil
+	return iter
 }
 
 // SeekToFirst returns a bidirectional iterator starting from the first element
@@ -391,6 +350,10 @@ func (s *SkipList) SeekToFirst(ver int64) Iterator {
 	}
 
 	current := s.header.next()
+
+	if current == s.footer {
+		return nil
+	}
 
 	iter := &iter{
 		ver:     ver,
@@ -409,8 +372,8 @@ func (s *SkipList) SeekToFirst(ver int64) Iterator {
 // SeekToLast returns a bidirectional iterator starting from the last element
 // in the list if the list is populated; otherwise, a nil iterator is returned.
 func (s *SkipList) SeekToLast(ver int64) Iterator {
-	current := s.footer
-	if current == nil {
+	current := s.footer.backward
+	if current == s.header {
 		return nil
 	}
 
@@ -428,179 +391,162 @@ func (s *SkipList) SeekToLast(ver int64) Iterator {
 	return nil
 }
 
-// Range returns an iterator that will go through all the
-// elements of the skip list that are greater or equal than from, but
-// less than to.
-func (s *SkipList) Range(ver int64, from, to []byte) Iterator {
-	start := s.getPath(s.header, nil, from)
-	return &rangeIterator{
-		iter: iter{
-			ver: ver,
-			current: &node{
-				forward:  []*node{start},
-				backward: start,
-			},
-			list: s,
-		},
-		upperLimit: to,
-		lowerLimit: from,
-	}
-}
-
-func (s *SkipList) level() int {
-	return len(s.header.forward) - 1
-}
-
-func maxInt(x, y int) int {
-	if x > y {
-		return x
-	}
-	return y
-}
-
-func (s *SkipList) effectiveMaxLevel() int {
-	return maxInt(s.level(), s.MaxLevel)
-}
-
 // Returns a new random level.
-func (s SkipList) randomLevel() (n int) {
-	for n = 0; n < s.effectiveMaxLevel() && rand.Float64() < p; n++ {
+func (s *SkipList) randomLevel() int {
+	lvl := 0
+
+	for rand.Float64() < p && lvl < s.MaxLevel-1 {
+		lvl++
 	}
-	return
+
+	return lvl
 }
 
 // Get returns the value associated with key from s (nil if the key is
 // not present in s). The second return value is true when the key is
 // present.
 func (s *SkipList) Get(ver int64, key []byte) (value []byte, ok bool) {
-	candidate := s.getPath(s.header, nil, key)
+	preds := s.searches.Get().([]*node)
+	succs := s.searches.Get().([]*node)
 
-	if candidate == nil || !bytes.Equal(candidate.key, key) {
+	defer s.searches.Put(preds)
+	defer s.searches.Put(succs)
+
+	layer, found := s.findNode(key, preds, succs)
+	if !found {
 		return nil, false
 	}
 
-	val, ok := candidate.atLeast(ver)
-	if ok {
-		return val, true
+	node := succs[layer]
+
+	if !node.linked() {
+		return nil, false
 	}
 
-	return nil, false
+	return node.atLeast(ver)
 }
 
-// GetGreaterOrEqual finds the node whose key is greater than or equal
-// to min. It returns its value, its actual key, and whether such a
-// node is present in the skip list.
-func (s *SkipList) GetGreaterOrEqual(ver int64, min []byte) (actualKey, value []byte, ok bool) {
-	candidate := s.getPath(s.header, nil, min)
-
-	if candidate != nil {
-		if val, ok := candidate.atLeast(ver); ok {
-			return candidate.key, val, true
-		}
-	}
-
-	return nil, nil, false
+func (s *SkipList) Contains(ver int64, key []byte) bool {
+	_, ok := s.Get(ver, key)
+	return ok
 }
 
-// getPath populates update with nodes that constitute the path to the
-// node that may contain key. The candidate node will be returned. If
-// update is nil, it will be left alone (the candidate node will still
-// be returned). If update is not nil, but it doesn't have enough
-// slots for all the nodes in the path, getPath will panic.
-func (s *SkipList) getPath(current *node, update []*node, key []byte) *node {
-	depth := len(current.forward) - 1
+func (s *SkipList) findNode(v []byte, preds, succs []*node) (atLayer int, found bool) {
+	pred := s.header
 
-	for i := depth; i >= 0; i-- {
-		for current.forward[i] != nil && s.lessThan(current.forward[i].key, key) {
-			current = current.forward[i]
+	for layer := s.MaxLevel - 1; layer >= 0; layer-- {
+		curr := pred.forward[layer]
+
+		for curr.key != nil && s.lessThan(curr.key, v) {
+			pred = curr
+			curr = pred.forward[layer]
 		}
-		if update != nil {
-			update[i] = current
+
+		if !found && curr.key != nil && bytes.Equal(v, curr.key) {
+			atLayer = layer
+			found = true
 		}
+
+		preds[layer] = pred
+		succs[layer] = curr
 	}
-	return current.next()
+
+	return
 }
 
-// Sets set the value associated with key in s.
-func (s *SkipList) Set(ver int64, key, value []byte) {
-	if key == nil {
-		panic("goskiplist: nil keys are not supported")
-	}
-	// s.level starts from 0, so we need to allocate one.
-	update := make([]*node, s.level()+1, s.effectiveMaxLevel()+1)
-	candidate := s.getPath(s.header, update, key)
+func (s *SkipList) Set(ver int64, key, value []byte) bool {
+	topLayer := s.randomLevel()
 
-	if candidate != nil && bytes.Equal(candidate.key, key) {
-		candidate.addValue(ver, value)
-		return
-	}
+	preds := s.searches.Get().([]*node)
+	succs := s.searches.Get().([]*node)
 
-	newLevel := s.randomLevel()
+	defer s.searches.Put(preds)
+	defer s.searches.Put(succs)
 
-	if currentLevel := s.level(); newLevel > currentLevel {
-		// there are no pointers for the higher levels in
-		// update. Header should be there. Also add higher
-		// level links to the header.
-		for i := currentLevel + 1; i <= newLevel; i++ {
-			update = append(update, s.header)
-			s.header.forward = append(s.header.forward, nil)
+	for {
+		layer, found := s.findNode(key, preds, succs)
+		if found {
+			nodeFound := succs[layer]
+
+			for !nodeFound.linked() {
+				runtime.Gosched()
+			}
+
+			nodeFound.addValue(ver, value)
+			return true
 		}
-	}
 
-	newNode := &node{
-		forward: make([]*node, newLevel+1, s.effectiveMaxLevel()+1),
-		key:     key,
-		value:   []version{{ver, value}},
-	}
+		highestLocked := -1
 
-	if previous := update[0]; previous.key != nil {
-		newNode.backward = previous
-	}
+		var prevPred *node
 
-	for i := 0; i <= newLevel; i++ {
-		newNode.forward[i] = update[i].forward[i]
-		update[i].forward[i] = newNode
-	}
+		valid := true
 
-	if newNode.forward[0] != nil {
-		if newNode.forward[0].backward != newNode {
-			newNode.forward[0].backward = newNode
+		for layer := 0; valid && layer <= topLayer; layer++ {
+			pred := preds[layer]
+			succ := succs[layer]
+
+			if pred != prevPred {
+				pred.lock.Lock()
+				highestLocked = layer
+				prevPred = pred
+			}
+
+			valid = pred.forward[layer] == succ
 		}
-	}
 
-	if s.footer == nil || s.lessThan(s.footer.key, key) {
-		s.footer = newNode
+		if !valid {
+			for level := 0; level <= highestLocked; level++ {
+				pred := preds[level]
+				pred.lock.Unlock()
+			}
+
+			continue
+		}
+
+		newNode := &node{
+			topLayer: topLayer,
+			forward:  make([]*node, topLayer+1),
+			key:      key,
+			value:    []version{{ver, value}},
+		}
+
+		if previous := preds[0]; previous.key != nil {
+			newNode.backward = previous
+		}
+
+		for layer := 0; layer <= topLayer; layer++ {
+			newNode.forward[layer] = succs[layer]
+		}
+
+		for layer := 0; layer <= topLayer; layer++ {
+			preds[layer].forward[layer] = newNode
+		}
+
+		if newNode.forward[0] != nil {
+			if newNode.forward[0].backward != newNode {
+				newNode.forward[0].backward = newNode
+			}
+		}
+
+		newNode.setLinked()
+
+		prevPred = nil
+
+		for level := 0; level <= highestLocked; level++ {
+			pred := preds[level]
+
+			if pred != prevPred {
+				pred.lock.Unlock()
+				prevPred = pred
+			}
+		}
+
+		return true
 	}
 }
 
 // Delete removes the node with the given key.
-//
-// It returns the old value and whether the node was present.
-func (s *SkipList) Delete(ver int64, key []byte) bool {
-	if key == nil {
-		panic("goskiplist: nil keys are not supported")
-	}
-
-	update := make([]*node, s.level()+1, s.effectiveMaxLevel())
-	candidate := s.getPath(s.header, update, key)
-
-	if candidate == nil || !bytes.Equal(candidate.key, key) {
-		return false
-	}
-
-	candidate.addValue(ver, nil)
-
-	return true
-}
-
-// NewCustomMap returns a new SkipList that will use lessThan as the
-// comparison function. lessThan should define a linear order on keys
-// you intend to use with the SkipList.
-func New() *SkipList {
-	return &SkipList{
-		header: &node{
-			forward: []*node{nil},
-		},
-		MaxLevel: DefaultMaxLevel,
-	}
+func (s *SkipList) Delete(ver int64, key []byte) {
+	s.Set(ver, key, nil)
 }
