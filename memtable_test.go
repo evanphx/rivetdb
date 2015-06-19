@@ -30,10 +30,9 @@ func TestMemtable(t *testing.T) {
 
 		mt.Put(1, key, val)
 
-		ok := mt.Delete(2, key)
-		require.True(t, ok)
+		mt.Delete(2, key)
 
-		_, ok = mt.Get(2, key)
+		_, ok := mt.Get(2, key)
 		require.False(t, ok)
 	})
 
@@ -42,8 +41,7 @@ func TestMemtable(t *testing.T) {
 
 		mt.Put(1, key, val)
 
-		ok := mt.Delete(2, key)
-		require.True(t, ok)
+		mt.Delete(2, key)
 
 		out, ok := mt.Get(1, key)
 		require.True(t, ok)

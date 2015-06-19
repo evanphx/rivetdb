@@ -13,7 +13,7 @@ type MemTable struct {
 
 func NewMemTable() *MemTable {
 	return &MemTable{
-		list: skiplist.New(),
+		list: skiplist.New(0),
 	}
 }
 
@@ -35,12 +35,10 @@ func (mt *MemTable) Get(ver int64, key []byte) ([]byte, bool) {
 	return val, ok
 }
 
-func (mt *MemTable) Delete(ver int64, key []byte) bool {
+func (mt *MemTable) Delete(ver int64, key []byte) {
 	mt.lock.Lock()
 
-	ok := mt.list.Delete(ver, key)
+	mt.list.Delete(ver, key)
 
 	mt.lock.Unlock()
-
-	return ok
 }
