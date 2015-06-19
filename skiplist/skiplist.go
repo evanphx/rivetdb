@@ -330,10 +330,7 @@ func (i *iter) setValueBackward(ver int64) bool {
 // Seek returns a bidirectional iterator starting with the first element whose
 // key is greater or equal to key; otherwise, a nil iterator is returned.
 func (s *SkipList) Seek(ver int64, key []byte) Iterator {
-	iter := &iter{
-		ver:  ver,
-		list: s,
-	}
+	iter := s.Iterator(ver)
 
 	if iter.Seek(key) {
 		return nil
