@@ -4,11 +4,13 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+
+	"github.com/evanphx/rivetdb/skiplist"
 )
 
 type namespace struct {
 	ver int64
-	mem *MemTable
+	mem *skiplist.SkipList
 
 	sub map[string]*namespace
 }
@@ -33,7 +35,7 @@ func New() *DB {
 	return &DB{
 		readTxid: new(int64),
 		root: &namespace{
-			mem: NewMemTable(),
+			mem: skiplist.New(0),
 			sub: make(map[string]*namespace),
 		},
 	}
@@ -108,7 +110,7 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 
 	ns := &namespace{
 		ver: tx.txid,
-		mem: NewMemTable(),
+		mem: skiplist.New(0),
 		sub: make(map[string]*namespace),
 	}
 
@@ -128,7 +130,7 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 
 	ns := &namespace{
 		ver: b.tx.txid,
-		mem: NewMemTable(),
+		mem: skiplist.New(0),
 		sub: make(map[string]*namespace),
 	}
 
@@ -145,7 +147,7 @@ func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	if !ok {
 		ns = &namespace{
 			ver: tx.txid,
-			mem: NewMemTable(),
+			mem: skiplist.New(0),
 			sub: make(map[string]*namespace),
 		}
 
@@ -163,7 +165,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	if !ok {
 		ns = &namespace{
 			ver: b.tx.txid,
-			mem: NewMemTable(),
+			mem: skiplist.New(0),
 			sub: make(map[string]*namespace),
 		}
 
@@ -174,7 +176,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 }
 
 func (b *Bucket) Put(key, val []byte) error {
-	b.ns.mem.Put(b.tx.txid, key, val)
+	b.ns.mem.Set(b.tx.txid, key, val)
 	return nil
 }
 
