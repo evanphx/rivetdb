@@ -1,0 +1,25 @@
+package sstable;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.equal_all) = true;
+
+message FileHeader {
+  optional uint64 index = 1;
+  optional uint64 index_size = 2;
+
+  optional uint64 keys = 3;
+}
+
+message IndexEntry {
+  optional bytes key = 1;
+  optional uint64 offset = 2;
+}
+
+message Entry {
+  optional bytes key = 1;
+  optional bytes value = 2;
+}
