@@ -17,9 +17,11 @@ message FileHeader {
 message IndexEntry {
   optional bytes key = 1;
   optional uint64 offset = 2;
+  optional int64 version = 3;
 }
 
 message Entry {
   optional bytes key = 1;
   optional bytes value = 2;
+  optional int64 version = 3;
 }

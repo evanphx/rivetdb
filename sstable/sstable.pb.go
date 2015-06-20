@@ -64,6 +64,7 @@ func (m *FileHeader) GetKeys() uint64 {
 type IndexEntry struct {
 	Key              []byte  `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	Offset           *uint64 `protobuf:"varint,2,opt,name=offset" json:"offset,omitempty"`
+	Version          *int64  `protobuf:"varint,3,opt,name=version" json:"version,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -85,9 +86,17 @@ func (m *IndexEntry) GetOffset() uint64 {
 	return 0
 }
 
+func (m *IndexEntry) GetVersion() int64 {
+	if m != nil && m.Version != nil {
+		return *m.Version
+	}
+	return 0
+}
+
 type Entry struct {
 	Key              []byte `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	Value            []byte `protobuf:"bytes,2,opt,name=value" json:"value,omitempty"`
+	Version          *int64 `protobuf:"varint,3,opt,name=version" json:"version,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -107,6 +116,13 @@ func (m *Entry) GetValue() []byte {
 		return m.Value
 	}
 	return nil
+}
+
+func (m *Entry) GetVersion() int64 {
+	if m != nil && m.Version != nil {
+		return *m.Version
+	}
+	return 0
 }
 
 func init() {
@@ -263,6 +279,23 @@ func (m *IndexEntry) Unmarshal(data []byte) error {
 				}
 			}
 			m.Offset = &v
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Version", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if index >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[index]
+				index++
+				v |= (int64(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Version = &v
 		default:
 			var sizeOfWire int
 			for {
@@ -350,6 +383,23 @@ func (m *Entry) Unmarshal(data []byte) error {
 			}
 			m.Value = append([]byte{}, data[index:postIndex]...)
 			index = postIndex
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Version", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if index >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[index]
+				index++
+				v |= (int64(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Version = &v
 		default:
 			var sizeOfWire int
 			for {
@@ -486,6 +536,9 @@ func (m *IndexEntry) Size() (n int) {
 	if m.Offset != nil {
 		n += 1 + sovSstable(uint64(*m.Offset))
 	}
+	if m.Version != nil {
+		n += 1 + sovSstable(uint64(*m.Version))
+	}
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
 	}
@@ -502,6 +555,9 @@ func (m *Entry) Size() (n int) {
 	if m.Value != nil {
 		l = len(m.Value)
 		n += 1 + l + sovSstable(uint64(l))
+	}
+	if m.Version != nil {
+		n += 1 + sovSstable(uint64(*m.Version))
 	}
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
@@ -584,6 +640,11 @@ func (m *IndexEntry) MarshalTo(data []byte) (n int, err error) {
 		i++
 		i = encodeVarintSstable(data, i, uint64(*m.Offset))
 	}
+	if m.Version != nil {
+		data[i] = 0x18
+		i++
+		i = encodeVarintSstable(data, i, uint64(*m.Version))
+	}
 	if m.XXX_unrecognized != nil {
 		i += copy(data[i:], m.XXX_unrecognized)
 	}
@@ -616,6 +677,11 @@ func (m *Entry) MarshalTo(data []byte) (n int, err error) {
 		i++
 		i = encodeVarintSstable(data, i, uint64(len(m.Value)))
 		i += copy(data[i:], m.Value)
+	}
+	if m.Version != nil {
+		data[i] = 0x18
+		i++
+		i = encodeVarintSstable(data, i, uint64(*m.Version))
 	}
 	if m.XXX_unrecognized != nil {
 		i += copy(data[i:], m.XXX_unrecognized)
@@ -734,6 +800,15 @@ func (this *IndexEntry) Equal(that interface{}) bool {
 	} else if that1.Offset != nil {
 		return false
 	}
+	if this.Version != nil && that1.Version != nil {
+		if *this.Version != *that1.Version {
+			return false
+		}
+	} else if this.Version != nil {
+		return false
+	} else if that1.Version != nil {
+		return false
+	}
 	if !bytes.Equal(this.XXX_unrecognized, that1.XXX_unrecognized) {
 		return false
 	}
@@ -763,6 +838,15 @@ func (this *Entry) Equal(that interface{}) bool {
 		return false
 	}
 	if !bytes.Equal(this.Value, that1.Value) {
+		return false
+	}
+	if this.Version != nil && that1.Version != nil {
+		if *this.Version != *that1.Version {
+			return false
+		}
+	} else if this.Version != nil {
+		return false
+	} else if that1.Version != nil {
 		return false
 	}
 	if !bytes.Equal(this.XXX_unrecognized, that1.XXX_unrecognized) {

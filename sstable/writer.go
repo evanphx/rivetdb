@@ -11,6 +11,7 @@ import "os"
 type idxkey struct {
 	key []byte
 	off uint64
+	ver int64
 }
 
 type Writer struct {
@@ -47,11 +48,12 @@ func NewWriter(path string) (*Writer, error) {
 	return w, nil
 }
 
-func (w *Writer) Add(key, value []byte) error {
+func (w *Writer) Add(ver int64, key, value []byte) error {
 	var entry Entry
 
 	entry.Key = key
 	entry.Value = value
+	entry.Version = &ver
 
 	entSz := entry.Size()
 
@@ -72,7 +74,7 @@ func (w *Writer) Add(key, value []byte) error {
 		return err
 	}
 
-	w.keys = append(w.keys, idxkey{key, w.pos})
+	w.keys = append(w.keys, idxkey{key, w.pos, ver})
 
 	w.pos += uint64(sz + entSz)
 
@@ -94,6 +96,7 @@ func (w *Writer) Close() error {
 
 		ie.Key = i.key
 		ie.Offset = &i.off
+		ie.Version = &i.ver
 
 		ieSz := ie.Size()
 

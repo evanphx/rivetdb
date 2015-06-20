@@ -84,9 +84,9 @@ func (r *Reader) init() error {
 	return nil
 }
 
-func (r *Reader) Get(key []byte) ([]byte, error) {
+func (r *Reader) Get(ver int64, key []byte) ([]byte, error) {
 	for _, idx := range r.indexes {
-		if bytes.Equal(idx.Key, key) {
+		if idx.GetVersion() == ver && bytes.Equal(idx.Key, key) {
 			_, err := r.f.Seek(int64(idx.GetOffset()), os.SEEK_SET)
 			if err != nil {
 				return nil, err

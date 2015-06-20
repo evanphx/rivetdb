@@ -29,10 +29,10 @@ func TestSSTable(t *testing.T) {
 		w, err := NewWriter(path)
 		require.NoError(t, err)
 
-		err = w.Add([]byte("1"), []byte("value1"))
+		err = w.Add(1, []byte("1"), []byte("value1"))
 		require.NoError(t, err)
 
-		err = w.Add([]byte("2"), []byte("value2"))
+		err = w.Add(2, []byte("2"), []byte("value2"))
 		require.NoError(t, err)
 
 		w.Close()
@@ -80,6 +80,7 @@ func TestSSTable(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("1"), ie.GetKey())
+		assert.Equal(t, int64(1), ie.GetVersion())
 
 		e1 := ie.GetOffset()
 
@@ -112,10 +113,10 @@ func TestSSTable(t *testing.T) {
 		w, err := NewWriter(path)
 		require.NoError(t, err)
 
-		err = w.Add([]byte("1"), []byte("value1"))
+		err = w.Add(1, []byte("1"), []byte("value1"))
 		require.NoError(t, err)
 
-		err = w.Add([]byte("2"), []byte("value2"))
+		err = w.Add(2, []byte("2"), []byte("value2"))
 		require.NoError(t, err)
 
 		w.Close()
@@ -123,7 +124,7 @@ func TestSSTable(t *testing.T) {
 		r, err := NewReader(path)
 		require.NoError(t, err)
 
-		v, err := r.Get([]byte("1"))
+		v, err := r.Get(1, []byte("1"))
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("value1"), v)
