@@ -1,6 +1,7 @@
 package rivetdb
 
 import (
+	"crypto/sha1"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -8,20 +9,14 @@ import (
 	"github.com/evanphx/rivetdb/skiplist"
 )
 
-type namespace struct {
-	ver int64
-	mem *skiplist.SkipList
-
-	sub map[string]*namespace
-}
-
 type DB struct {
 	txid     int64
 	readTxid *int64
 
 	rwlock sync.Mutex
 
-	root     *namespace
+	skip     *skiplist.SkipList
+	root     *Bucket
 	nameLock sync.Mutex
 }
 
@@ -34,10 +29,7 @@ type Tx struct {
 func New() *DB {
 	return &DB{
 		readTxid: new(int64),
-		root: &namespace{
-			mem: skiplist.New(0),
-			sub: make(map[string]*namespace),
-		},
+		skip:     skiplist.New(0),
 	}
 }
 
@@ -61,127 +53,104 @@ func (tx *Tx) Id() int64 {
 }
 
 type Bucket struct {
-	tx *Tx
-	ns *namespace
+	tx     *Tx
+	prefix []byte
 }
 
 func (tx *Tx) Bucket(name []byte) *Bucket {
-	tx.db.nameLock.Lock()
-	defer tx.db.nameLock.Unlock()
-
-	ns, ok := tx.db.root.sub[string(name)]
-	if !ok {
-		return nil
-	}
-
-	if ns.ver <= tx.txid {
-		return &Bucket{tx, ns}
-	}
-
-	return nil
+	root := &Bucket{tx: tx}
+	return root.Bucket(name)
 }
 
 func (b *Bucket) Bucket(name []byte) *Bucket {
 	b.tx.db.nameLock.Lock()
 	defer b.tx.db.nameLock.Unlock()
 
-	ns, ok := b.ns.sub[string(name)]
+	h := sha1.New()
+	h.Write(b.prefix)
+	h.Write(name)
+
+	sum := h.Sum(nil)
+
+	key := append([]byte{'b'}, sum...)
+
+	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
 	if !ok {
 		return nil
 	}
 
-	if ns.ver <= b.tx.txid {
-		return &Bucket{b.tx, ns}
-	}
-
-	return nil
+	return &Bucket{b.tx, []byte(sum)}
 }
 
 var ErrBucketExists = errors.New("bucket exists")
 
 func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
-	tx.db.nameLock.Lock()
-	defer tx.db.nameLock.Unlock()
-
-	_, ok := tx.db.root.sub[string(name)]
-	if ok {
-		return nil, ErrBucketExists
-	}
-
-	ns := &namespace{
-		ver: tx.txid,
-		mem: skiplist.New(0),
-		sub: make(map[string]*namespace),
-	}
-
-	tx.db.root.sub[string(name)] = ns
-
-	return &Bucket{tx, ns}, nil
+	root := &Bucket{tx: tx}
+	return root.CreateBucket(name)
 }
 
 func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 	b.tx.db.nameLock.Lock()
 	defer b.tx.db.nameLock.Unlock()
 
-	_, ok := b.ns.sub[string(name)]
+	h := sha1.New()
+	h.Write(b.prefix)
+	h.Write(name)
+
+	sum := h.Sum(nil)
+
+	key := append([]byte{'b'}, sum...)
+
+	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
 	if ok {
 		return nil, ErrBucketExists
 	}
 
-	ns := &namespace{
-		ver: b.tx.txid,
-		mem: skiplist.New(0),
-		sub: make(map[string]*namespace),
-	}
+	b.tx.db.skip.Set(b.tx.txid, key, name)
 
-	b.ns.sub[string(name)] = ns
-
-	return &Bucket{b.tx, ns}, nil
+	return &Bucket{b.tx, []byte(sum)}, nil
 }
 
 func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
-	tx.db.nameLock.Lock()
-	defer tx.db.nameLock.Unlock()
-
-	ns, ok := tx.db.root.sub[string(name)]
-	if !ok {
-		ns = &namespace{
-			ver: tx.txid,
-			mem: skiplist.New(0),
-			sub: make(map[string]*namespace),
-		}
-
-		tx.db.root.sub[string(name)] = ns
-	}
-
-	return &Bucket{tx, ns}, nil
+	root := &Bucket{tx: tx}
+	return root.CreateBucketIfNotExists(name)
 }
 
 func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	b.tx.db.nameLock.Lock()
 	defer b.tx.db.nameLock.Unlock()
 
-	ns, ok := b.ns.sub[string(name)]
-	if !ok {
-		ns = &namespace{
-			ver: b.tx.txid,
-			mem: skiplist.New(0),
-			sub: make(map[string]*namespace),
-		}
+	h := sha1.New()
+	h.Write(b.prefix)
+	h.Write(name)
 
-		b.ns.sub[string(name)] = ns
+	sum := h.Sum(nil)
+
+	key := append([]byte{'b'}, sum...)
+
+	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
+	if !ok {
+		b.tx.db.skip.Set(b.tx.txid, key, name)
 	}
 
-	return &Bucket{b.tx, ns}, nil
+	return &Bucket{b.tx, []byte(sum)}, nil
+}
+
+func (b *Bucket) vkey(key []byte) []byte {
+	vkey := []byte{'v'}
+	vkey = append(vkey, b.prefix...)
+	vkey = append(vkey, key...)
+
+	return vkey
 }
 
 func (b *Bucket) Put(key, val []byte) error {
-	b.ns.mem.Set(b.tx.txid, key, val)
+	b.tx.db.skip.Set(b.tx.txid, b.vkey(key), val)
 	return nil
 }
 
 func (b *Bucket) Get(key []byte) []byte {
-	val, ok := b.ns.mem.Get(b.tx.txid, key)
+	val, ok := b.tx.db.skip.Get(b.tx.txid, b.vkey(key))
 	if ok {
 		return val
 	}
