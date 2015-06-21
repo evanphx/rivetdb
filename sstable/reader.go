@@ -121,29 +121,8 @@ func (r *Reader) init() error {
 
 func (r *Reader) Get(ver int64, key []byte) ([]byte, error) {
 	for _, idx := range r.indexes {
-		if idx.GetVersion() == ver && bytes.Equal(idx.Key, key) {
-			_, err := r.f.Seek(int64(idx.GetOffset()), os.SEEK_SET)
-			if err != nil {
-				return nil, err
-			}
-
-			br := bufio.NewReader(r.f)
-
-			entSz, err := binary.ReadUvarint(br)
-			if err != nil {
-				return nil, err
-			}
-
-			ebuf := make([]byte, entSz)
-
-			_, err = br.Read(ebuf)
-			if err != nil {
-				return nil, err
-			}
-
-			var entry Entry
-
-			err = entry.Unmarshal(ebuf)
+		if idx.GetVersion() <= ver && bytes.Equal(idx.Key, key) {
+			entry, err := r.readEntry(int64(idx.GetOffset()))
 			if err != nil {
 				return nil, err
 			}
@@ -153,4 +132,34 @@ func (r *Reader) Get(ver int64, key []byte) ([]byte, error) {
 	}
 
 	return nil, nil
+}
+
+func (r *Reader) readEntry(off int64) (*Entry, error) {
+	_, err := r.f.Seek(off, os.SEEK_SET)
+	if err != nil {
+		return nil, err
+	}
+
+	br := bufio.NewReader(r.f)
+
+	entSz, err := binary.ReadUvarint(br)
+	if err != nil {
+		return nil, err
+	}
+
+	ebuf := make([]byte, entSz)
+
+	_, err = br.Read(ebuf)
+	if err != nil {
+		return nil, err
+	}
+
+	var entry Entry
+
+	err = entry.Unmarshal(ebuf)
+	if err != nil {
+		return nil, err
+	}
+
+	return &entry, nil
 }
