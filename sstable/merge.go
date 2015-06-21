@@ -50,7 +50,16 @@ func (m *Merger) Add(path string) error {
 
 var ErrMultipleKeySameVersion = errors.New("multiple keys have the same version")
 
-func (m *Merger) MergeInto(out string) error {
+func (m *Merger) remove(next *indexIterator) {
+	for idx, i := range m.iters {
+		if i == next {
+			m.iters = append(m.iters[:idx], m.iters[idx+1:]...)
+			break
+		}
+	}
+}
+
+func (m *Merger) MergeInto(out string, min int64) error {
 	w, err := NewWriter(out)
 	if err != nil {
 		return err
@@ -58,6 +67,8 @@ func (m *Merger) MergeInto(out string) error {
 
 	for len(m.iters) > 0 {
 		var next *indexIterator
+
+		var toRemove []*indexIterator
 
 		for _, i := range m.iters {
 			if next == nil {
@@ -76,9 +87,23 @@ func (m *Merger) MergeInto(out string) error {
 				}
 
 				if next.ver() < i.ver() {
+					if next.ver() < min {
+						if !next.next() {
+							toRemove = append(toRemove, next)
+						}
+					}
+
 					next = i
+				} else if i.ver() < min {
+					if !i.next() {
+						toRemove = append(toRemove, i)
+					}
 				}
 			}
+		}
+
+		for _, i := range toRemove {
+			m.remove(i)
 		}
 
 		val, err := next.value()
@@ -92,12 +117,7 @@ func (m *Merger) MergeInto(out string) error {
 		}
 
 		if !next.next() {
-			for idx, i := range m.iters {
-				if i == next {
-					m.iters = append(m.iters[:idx], m.iters[idx+1:]...)
-					break
-				}
-			}
+			m.remove(next)
 		}
 	}
 
