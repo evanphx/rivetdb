@@ -290,6 +290,42 @@ func (s *SkipList) Iterator(ver int64) Iterator {
 	}
 }
 
+func (s *SkipList) AllEntries() *VersionIterator {
+	return &VersionIterator{current: s.header, list: s}
+}
+
+type VersionIterator struct {
+	current *node
+	list    *SkipList
+}
+
+func (i *VersionIterator) Next() bool {
+	nxt := i.current.next()
+	if nxt == nil {
+		return false
+	}
+
+	if nxt == i.list.footer {
+		return false
+	}
+
+	i.current = nxt
+	return true
+}
+
+func (i *VersionIterator) Key() []byte {
+	return i.current.key
+}
+
+func (i *VersionIterator) NumValues() int {
+	return len(i.current.value)
+}
+
+func (i *VersionIterator) Value(v int) ([]byte, int64) {
+	ver := i.current.value[v]
+	return ver.val, ver.ver
+}
+
 func (i *iter) setValue(ver int64) bool {
 	for {
 		val, ok := i.current.atLeast(ver)
