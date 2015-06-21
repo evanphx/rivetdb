@@ -70,6 +70,8 @@ func (m *Merger) MergeInto(out string, min int64) error {
 
 		var toRemove []*indexIterator
 
+		var multiples bool
+
 		for _, i := range m.iters {
 			if next == nil {
 				next = i
@@ -91,12 +93,18 @@ func (m *Merger) MergeInto(out string, min int64) error {
 						if !next.next() {
 							toRemove = append(toRemove, next)
 						}
+					} else {
+						multiples = true
 					}
 
 					next = i
-				} else if i.ver() < min {
-					if !i.next() {
-						toRemove = append(toRemove, i)
+				} else {
+					if i.ver() < min {
+						if !i.next() {
+							toRemove = append(toRemove, i)
+						}
+					} else {
+						multiples = true
 					}
 				}
 			}
@@ -111,9 +119,11 @@ func (m *Merger) MergeInto(out string, min int64) error {
 			return err
 		}
 
-		err = w.Add(next.ver(), next.key(), val)
-		if err != nil {
-			return err
+		if val != nil || multiples {
+			err = w.Add(next.ver(), next.key(), val)
+			if err != nil {
+				return err
+			}
 		}
 
 		if !next.next() {

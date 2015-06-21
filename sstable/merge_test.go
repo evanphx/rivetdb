@@ -161,5 +161,48 @@ func TestMerge(t *testing.T) {
 		assert.Nil(t, v)
 	})
 
+	n.It("elides deleted keys with one version", func() {
+		path := filepath.Join(tmpdir, "one")
+		defer os.Remove(path)
+
+		w, err := NewWriter(path)
+		require.NoError(t, err)
+
+		err = w.Add(1, []byte("1"), []byte("value1"))
+		require.NoError(t, err)
+
+		err = w.Add(1, []byte("2"), []byte("value2"))
+		require.NoError(t, err)
+
+		w.Close()
+
+		path2 := filepath.Join(tmpdir, "two")
+		defer os.Remove(path2)
+
+		q, err := NewWriter(path2)
+		require.NoError(t, err)
+
+		err = q.Add(2, []byte("2"), nil)
+		require.NoError(t, err)
+
+		q.Close()
+
+		merge := NewMerger()
+
+		merge.Add(path)
+		merge.Add(path2)
+
+		path3 := filepath.Join(tmpdir, "three")
+		defer os.Remove(path3)
+
+		err = merge.MergeInto(path3, 2)
+		require.NoError(t, err)
+
+		r, err := NewReader(path3)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, len(r.indexes))
+	})
+
 	n.Meow()
 }
