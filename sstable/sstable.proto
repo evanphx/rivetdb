@@ -12,6 +12,8 @@ message FileHeader {
   optional uint64 index_size = 2;
 
   optional uint64 keys = 3;
+
+  optional uint64 last_index = 5;
 }
 
 message IndexEntry {

@@ -14,6 +14,8 @@ type Reader struct {
 
 	hdr     FileHeader
 	indexes []*IndexEntry
+
+	Start, End []byte
 }
 
 func NewReader(path string) (*Reader, error) {
@@ -33,6 +35,21 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	return r, nil
+}
+
+func (r *Reader) readIndex(data []byte) (*IndexEntry, error) {
+	var ie IndexEntry
+
+	entSz, sz := binary.Uvarint(data)
+
+	data = data[sz:]
+
+	err := ie.Unmarshal(data[:entSz])
+	if err != nil {
+		return nil, err
+	}
+
+	return &ie, nil
 }
 
 func (r *Reader) init() error {
@@ -57,12 +74,14 @@ func (r *Reader) init() error {
 		return err
 	}
 
-	data := make([]byte, r.hdr.GetIndexSize())
+	idxData := make([]byte, r.hdr.GetIndexSize())
 
-	_, err = io.ReadFull(r.f, data)
+	_, err = io.ReadFull(r.f, idxData)
 	if err != nil {
 		return err
 	}
+
+	data := idxData
 
 	for len(data) > 0 {
 		var ie IndexEntry
@@ -80,6 +99,22 @@ func (r *Reader) init() error {
 
 		r.indexes = append(r.indexes, &ie)
 	}
+
+	// Read last and first
+
+	ie, err := r.readIndex(idxData)
+	if err != nil {
+		return err
+	}
+
+	r.Start = ie.Key
+
+	ie, err = r.readIndex(idxData[r.hdr.GetLastIndex():])
+	if err != nil {
+		return err
+	}
+
+	r.End = ie.Key
 
 	return nil
 }

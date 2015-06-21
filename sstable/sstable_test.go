@@ -130,5 +130,30 @@ func TestSSTable(t *testing.T) {
 		assert.Equal(t, []byte("value1"), v)
 	})
 
+	n.It("knows the key range", func() {
+		path := filepath.Join(tmpdir, "new")
+		defer os.Remove(path)
+
+		w, err := NewWriter(path)
+		require.NoError(t, err)
+
+		err = w.Add(1, []byte("1"), []byte("value1"))
+		require.NoError(t, err)
+
+		err = w.Add(2, []byte("2"), []byte("value2"))
+		require.NoError(t, err)
+
+		err = w.Add(2, []byte("3"), []byte("value3"))
+		require.NoError(t, err)
+
+		w.Close()
+
+		r, err := NewReader(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, []byte("1"), r.Start)
+		assert.Equal(t, []byte("3"), r.End)
+	})
+
 	n.Meow()
 }

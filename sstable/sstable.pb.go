@@ -33,6 +33,7 @@ type FileHeader struct {
 	Index            *uint64 `protobuf:"varint,1,opt,name=index" json:"index,omitempty"`
 	IndexSize        *uint64 `protobuf:"varint,2,opt,name=index_size" json:"index_size,omitempty"`
 	Keys             *uint64 `protobuf:"varint,3,opt,name=keys" json:"keys,omitempty"`
+	LastIndex        *uint64 `protobuf:"varint,5,opt,name=last_index" json:"last_index,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -57,6 +58,13 @@ func (m *FileHeader) GetIndexSize() uint64 {
 func (m *FileHeader) GetKeys() uint64 {
 	if m != nil && m.Keys != nil {
 		return *m.Keys
+	}
+	return 0
+}
+
+func (m *FileHeader) GetLastIndex() uint64 {
+	if m != nil && m.LastIndex != nil {
+		return *m.LastIndex
 	}
 	return 0
 }
@@ -197,6 +205,23 @@ func (m *FileHeader) Unmarshal(data []byte) error {
 				}
 			}
 			m.Keys = &v
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field LastIndex", wireType)
+			}
+			var v uint64
+			for shift := uint(0); ; shift += 7 {
+				if index >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[index]
+				index++
+				v |= (uint64(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.LastIndex = &v
 		default:
 			var sizeOfWire int
 			for {
@@ -520,6 +545,9 @@ func (m *FileHeader) Size() (n int) {
 	if m.Keys != nil {
 		n += 1 + sovSstable(uint64(*m.Keys))
 	}
+	if m.LastIndex != nil {
+		n += 1 + sovSstable(uint64(*m.LastIndex))
+	}
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
 	}
@@ -607,6 +635,11 @@ func (m *FileHeader) MarshalTo(data []byte) (n int, err error) {
 		data[i] = 0x18
 		i++
 		i = encodeVarintSstable(data, i, uint64(*m.Keys))
+	}
+	if m.LastIndex != nil {
+		data[i] = 0x28
+		i++
+		i = encodeVarintSstable(data, i, uint64(*m.LastIndex))
 	}
 	if m.XXX_unrecognized != nil {
 		i += copy(data[i:], m.XXX_unrecognized)
@@ -761,6 +794,15 @@ func (this *FileHeader) Equal(that interface{}) bool {
 	} else if this.Keys != nil {
 		return false
 	} else if that1.Keys != nil {
+		return false
+	}
+	if this.LastIndex != nil && that1.LastIndex != nil {
+		if *this.LastIndex != *that1.LastIndex {
+			return false
+		}
+	} else if this.LastIndex != nil {
+		return false
+	} else if that1.LastIndex != nil {
 		return false
 	}
 	if !bytes.Equal(this.XXX_unrecognized, that1.XXX_unrecognized) {

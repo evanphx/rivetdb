@@ -90,6 +90,7 @@ func (w *Writer) Close() error {
 	b := make([]byte, 1024)
 
 	var tocSz uint64
+	var prev uint64
 
 	for _, i := range w.keys {
 		var ie IndexEntry
@@ -106,7 +107,7 @@ func (w *Writer) Close() error {
 
 		sz := binary.PutUvarint(b, uint64(ieSz))
 
-		tocSz += uint64(sz)
+		prev = uint64(sz)
 
 		_, err := w.bw.Write(b[:sz])
 		if err != nil {
@@ -118,13 +119,16 @@ func (w *Writer) Close() error {
 			return err
 		}
 
-		tocSz += uint64(sz)
+		prev += uint64(sz)
+		tocSz += prev
 
 		_, err = w.bw.Write(b[:sz])
 		if err != nil {
 			return err
 		}
 	}
+
+	hdr.LastIndex = proto.Uint64(tocSz - prev)
 
 	w.bw.Flush()
 
