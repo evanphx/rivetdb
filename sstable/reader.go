@@ -8,14 +8,62 @@ import (
 	"os"
 )
 
+type KeyRange struct {
+	Start, End []byte
+}
+
+func le(a, b []byte) bool {
+	return bytes.Compare(a, b) != 1
+}
+
+func ge(a, b []byte) bool {
+	return bytes.Compare(a, b) != -1
+}
+
+const (
+	before = -1
+	equal  = 0
+	after  = 1
+)
+
+func (r KeyRange) Overlap(o KeyRange) bool {
+
+	var (
+		start = bytes.Compare(o.Start, r.Start)
+		end   = bytes.Compare(o.End, r.End)
+	)
+
+	if start != after {
+		if end != before {
+			return true
+		}
+
+		if ge(o.End, r.Start) && end != after {
+			return true
+		}
+	}
+
+	if start != before {
+		if end != after {
+			return true
+		}
+
+		if ge(r.End, o.Start) && end != before {
+			return true
+		}
+	}
+
+	return false
+}
+
 type Reader struct {
-	path string
-	f    *os.File
+	f *os.File
 
 	hdr     FileHeader
 	indexes []*IndexEntry
 
-	Start, End []byte
+	Path  string
+	Range KeyRange
 }
 
 func NewReader(path string) (*Reader, error) {
@@ -25,7 +73,7 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	r := &Reader{
-		path: path,
+		Path: path,
 		f:    f,
 	}
 
@@ -35,6 +83,22 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	return r, nil
+}
+
+func (r *Reader) Close() error {
+	return r.f.Close()
+}
+
+func (r *Reader) MayContain(key []byte) bool {
+	if bytes.Compare(key, r.Range.Start) == -1 {
+		return false
+	}
+
+	if bytes.Compare(key, r.Range.End) == 1 {
+		return false
+	}
+
+	return true
 }
 
 func (r *Reader) readIndex(data []byte) (*IndexEntry, error) {
@@ -107,14 +171,14 @@ func (r *Reader) init() error {
 		return err
 	}
 
-	r.Start = ie.Key
+	r.Range.Start = ie.Key
 
 	ie, err = r.readIndex(idxData[r.hdr.GetLastIndex():])
 	if err != nil {
 		return err
 	}
 
-	r.End = ie.Key
+	r.Range.End = ie.Key
 
 	return nil
 }

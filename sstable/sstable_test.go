@@ -151,8 +151,8 @@ func TestSSTable(t *testing.T) {
 		r, err := NewReader(path)
 		require.NoError(t, err)
 
-		assert.Equal(t, []byte("1"), r.Start)
-		assert.Equal(t, []byte("3"), r.End)
+		assert.Equal(t, []byte("1"), r.Range.Start)
+		assert.Equal(t, []byte("3"), r.Range.End)
 	})
 
 	n.Meow()
