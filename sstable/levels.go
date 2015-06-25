@@ -1,6 +1,6 @@
 package sstable
 
-import "fmt"
+import "errors"
 
 type Levels struct {
 	levels []*Level
@@ -43,7 +43,13 @@ type MergeRequest struct {
 	MinVersion int64
 }
 
+var ErrTopLevel = errors.New("top level, nowhere to merge to")
+
 func (l *Levels) Merge(req MergeRequest) error {
+	if req.Level >= len(l.levels)-1 {
+		return ErrTopLevel
+	}
+
 	path, rng := l.levels[req.Level].PickRandom()
 
 	merge := NewMerger()
@@ -59,8 +65,6 @@ func (l *Levels) Merge(req MergeRequest) error {
 
 	overlap := up.FindOverlap(rng)
 
-	fmt.Printf("overlap: %#v\n", up)
-
 	for _, path := range overlap {
 		err := merge.Add(path)
 		if err != nil {
@@ -73,11 +77,9 @@ func (l *Levels) Merge(req MergeRequest) error {
 		return err
 	}
 
-	fmt.Printf("remove %s from %d\n", path, req.Level)
 	l.levels[req.Level].Remove(path)
 
 	for _, path := range overlap {
-		fmt.Printf("remove %s from %d\n", path, upLevel)
 		l.levels[upLevel].Remove(path)
 	}
 
