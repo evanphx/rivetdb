@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vektra/neko"
 )
 
@@ -39,6 +40,14 @@ func TestSkiplist(t *testing.T) {
 
 		assert.Equal(t, ik(3), iter.Key())
 		assert.Equal(t, ik(3), iter.Value())
+	})
+
+	n.It("functions when empty", func() {
+		s := New(0)
+
+		v, ok := s.Get(1, ik(1))
+		require.False(t, ok)
+		assert.Nil(t, v)
 	})
 
 	n.Meow()

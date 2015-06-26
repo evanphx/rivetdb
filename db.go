@@ -3,13 +3,19 @@ package rivetdb
 import (
 	"crypto/sha1"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
 	"github.com/evanphx/rivetdb/skiplist"
+	"github.com/evanphx/rivetdb/sstable"
 )
 
 type DB struct {
+	Path string
+
 	txid     int64
 	readTxid *int64
 
@@ -18,19 +24,74 @@ type DB struct {
 	skip     *skiplist.SkipList
 	root     *Bucket
 	nameLock sync.Mutex
+
+	tables *sstable.Levels
+
+	memoryBytes int
+	nextL0      int
 }
 
 type Tx struct {
 	db       *DB
 	txid     int64
 	writable bool
+
+	memoryBytes int
 }
 
-func New() *DB {
+func New(path string) *DB {
+	os.MkdirAll(path, 0755)
+
 	return &DB{
+		Path:     path,
 		readTxid: new(int64),
 		skip:     skiplist.New(0),
+		tables:   sstable.NewLevels(10),
 	}
+}
+
+func (db *DB) flushMemory() error {
+	id := db.nextL0
+	db.nextL0++
+
+	path := filepath.Join(db.Path, fmt.Sprintf("level0_%d.sst", id))
+
+	zw, err := NewZeroWriter(path, db.skip)
+	if err != nil {
+		return err
+	}
+
+	_, err = zw.Write()
+	if err != nil {
+		return err
+	}
+
+	err = db.tables.Add(0, path)
+	if err != nil {
+		return err
+	}
+
+	db.skip = skiplist.New(0)
+	db.memoryBytes = 0
+	return nil
+}
+
+func (db *DB) get(ver int64, key []byte) ([]byte, bool) {
+	v, ok := db.skip.Get(ver, key)
+	if ok {
+		return v, true
+	}
+
+	v, err := db.tables.GetValue(ver, key)
+	if err != nil {
+		panic(err)
+	}
+
+	if v == nil {
+		return nil, false
+	}
+
+	return v, true
 }
 
 func (db *DB) Begin(writable bool) (*Tx, error) {
@@ -45,7 +106,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txid = atomic.LoadInt64(db.readTxid)
 	}
 
-	return &Tx{db, txid, writable}, nil
+	return &Tx{db: db, txid: txid, writable: writable}, nil
 }
 
 func (tx *Tx) Id() int64 {
@@ -74,7 +135,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
+	_, ok := b.tx.db.get(b.tx.txid, key)
 	if !ok {
 		return nil
 	}
@@ -101,7 +162,7 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
+	_, ok := b.tx.db.get(b.tx.txid, key)
 	if ok {
 		return nil, ErrBucketExists
 	}
@@ -128,7 +189,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.skip.Get(b.tx.txid, key)
+	_, ok := b.tx.db.get(b.tx.txid, key)
 	if !ok {
 		b.tx.db.skip.Set(b.tx.txid, key, name)
 	}
@@ -145,12 +206,14 @@ func (b *Bucket) vkey(key []byte) []byte {
 }
 
 func (b *Bucket) Put(key, val []byte) error {
+	b.tx.memoryBytes += sstable.EstimateMemory(key, val)
+
 	b.tx.db.skip.Set(b.tx.txid, b.vkey(key), val)
 	return nil
 }
 
 func (b *Bucket) Get(key []byte) []byte {
-	val, ok := b.tx.db.skip.Get(b.tx.txid, b.vkey(key))
+	val, ok := b.tx.db.get(b.tx.txid, b.vkey(key))
 	if ok {
 		return val
 	}
@@ -166,6 +229,9 @@ func (tx *Tx) Commit() error {
 	}
 
 	atomic.StoreInt64(tx.db.readTxid, tx.txid)
+
+	tx.db.memoryBytes += tx.memoryBytes
+
 	tx.db.rwlock.Unlock()
 
 	return nil
