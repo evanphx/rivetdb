@@ -16,6 +16,8 @@ import (
 type DB struct {
 	Path string
 
+	opts Options
+
 	txid     int64
 	readTxid *int64
 
@@ -29,6 +31,7 @@ type DB struct {
 
 	memoryBytes int
 	nextL0      int
+	l0limit     int
 }
 
 type Tx struct {
@@ -39,15 +42,43 @@ type Tx struct {
 	memoryBytes int
 }
 
-func New(path string) *DB {
+const DefaultMemoryBuffer = 1024 * 1024
+
+type Options struct {
+	MemoryBuffer int
+	Debug        bool
+}
+
+func DefaultOptions() Options {
+	return Options{
+		MemoryBuffer: DefaultMemoryBuffer,
+	}
+}
+
+func New(path string, opts Options) *DB {
 	os.MkdirAll(path, 0755)
+
+	buf := opts.MemoryBuffer
+	if buf == 0 {
+		buf = DefaultMemoryBuffer
+	}
 
 	return &DB{
 		Path:     path,
+		opts:     opts,
 		readTxid: new(int64),
 		skip:     skiplist.New(0),
 		tables:   sstable.NewLevels(10),
+		l0limit:  buf,
 	}
+}
+
+func (db *DB) debug(str string, args ...interface{}) {
+	if !db.opts.Debug {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, str, args...)
 }
 
 func (db *DB) flushMemory() error {
@@ -209,6 +240,7 @@ func (b *Bucket) Put(key, val []byte) error {
 	b.tx.memoryBytes += sstable.EstimateMemory(key, val)
 
 	b.tx.db.skip.Set(b.tx.txid, b.vkey(key), val)
+
 	return nil
 }
 
@@ -228,11 +260,18 @@ func (tx *Tx) Commit() error {
 		return ErrNotWritable
 	}
 
+	defer tx.db.rwlock.Unlock()
+
 	atomic.StoreInt64(tx.db.readTxid, tx.txid)
 
 	tx.db.memoryBytes += tx.memoryBytes
 
-	tx.db.rwlock.Unlock()
+	if tx.db.memoryBytes > tx.db.l0limit {
+		err := tx.db.flushMemory()
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
