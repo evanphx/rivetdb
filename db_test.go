@@ -193,6 +193,8 @@ func TestDB(t *testing.T) {
 		err = tx.Commit()
 		require.NoError(t, err)
 
+		assert.Equal(t, 1, db.Stats.NumFlushes)
+
 		assert.Equal(t, 0, db.memoryBytes)
 
 		path := filepath.Join(dbpath, "level0_0.sst")
@@ -213,6 +215,49 @@ func TestDB(t *testing.T) {
 		require.NotNil(t, b2)
 
 		out := b2.Get(key)
+		assert.Equal(t, val, out)
+	})
+
+	n.It("writes values to a WAL log that can be recovered", func() {
+		db := New(dbpath, Options{})
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		err = tx.Commit()
+		require.NoError(t, err)
+
+		r, err := NewWALReader(db.walFile)
+		require.NoError(t, err)
+
+		list, err := r.IntoList()
+		require.NoError(t, err)
+
+		v := list.AllEntries()
+		require.True(t, v.Next())
+
+		db2 := New(dbpath, Options{})
+
+		assert.Equal(t, int64(1), db2.txid)
+
+		tx2, err := db2.Begin(false)
+		require.NoError(t, err)
+
+		assert.Equal(t, int64(1), tx2.txid)
+
+		b2 := tx2.Bucket(buk)
+		require.NotNil(t, b2)
+
+		out := b2.Get(key)
+
 		assert.Equal(t, val, out)
 	})
 

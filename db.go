@@ -13,8 +13,13 @@ import (
 	"github.com/evanphx/rivetdb/sstable"
 )
 
+type Stats struct {
+	NumFlushes int
+}
+
 type DB struct {
-	Path string
+	Path  string
+	Stats Stats
 
 	opts Options
 
@@ -28,6 +33,9 @@ type DB struct {
 	nameLock sync.Mutex
 
 	tables *sstable.Levels
+
+	wal     *WAL
+	walFile string
 
 	memoryBytes int
 	nextL0      int
@@ -63,14 +71,51 @@ func New(path string, opts Options) *DB {
 		buf = DefaultMemoryBuffer
 	}
 
-	return &DB{
+	db := &DB{
 		Path:     path,
 		opts:     opts,
 		readTxid: new(int64),
 		skip:     skiplist.New(0),
 		tables:   sstable.NewLevels(10),
+		walFile:  filepath.Join(path, "wal"),
 		l0limit:  buf,
 	}
+
+	err := db.reloadWAL()
+	if err != nil {
+		panic(err)
+	}
+
+	wal, err := NewWAL(db.walFile)
+	if err != nil {
+		panic(err)
+	}
+
+	db.wal = wal
+
+	return db
+}
+
+func (db *DB) reloadWAL() error {
+	r, err := NewWALReader(db.walFile)
+	if err != nil {
+		if _, ok := err.(*os.PathError); ok {
+			return nil
+		}
+
+		return err
+	}
+
+	list, err := r.IntoList()
+	if err != nil {
+		return err
+	}
+
+	db.txid = r.MaxCommittedVersion
+	*db.readTxid = r.MaxCommittedVersion
+	db.skip = list
+
+	return nil
 }
 
 func (db *DB) debug(str string, args ...interface{}) {
@@ -78,7 +123,7 @@ func (db *DB) debug(str string, args ...interface{}) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, str, args...)
+	fmt.Fprintf(os.Stderr, str+"\n", args...)
 }
 
 func (db *DB) flushMemory() error {
@@ -86,6 +131,10 @@ func (db *DB) flushMemory() error {
 	db.nextL0++
 
 	path := filepath.Join(db.Path, fmt.Sprintf("level0_%d.sst", id))
+
+	db.debug("Flushing memory values to: %s", path)
+
+	db.Stats.NumFlushes++
 
 	zw, err := NewZeroWriter(path, db.skip)
 	if err != nil {
@@ -200,6 +249,11 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 
 	b.tx.db.skip.Set(b.tx.txid, key, name)
 
+	err := b.tx.db.wal.Add(b.tx.txid, key, name)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Bucket{b.tx, []byte(sum)}, nil
 }
 
@@ -223,6 +277,11 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	_, ok := b.tx.db.get(b.tx.txid, key)
 	if !ok {
 		b.tx.db.skip.Set(b.tx.txid, key, name)
+
+		err := b.tx.db.wal.Add(b.tx.txid, key, name)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &Bucket{b.tx, []byte(sum)}, nil
@@ -239,9 +298,11 @@ func (b *Bucket) vkey(key []byte) []byte {
 func (b *Bucket) Put(key, val []byte) error {
 	b.tx.memoryBytes += sstable.EstimateMemory(key, val)
 
-	b.tx.db.skip.Set(b.tx.txid, b.vkey(key), val)
+	vkey := b.vkey(key)
 
-	return nil
+	b.tx.db.skip.Set(b.tx.txid, vkey, val)
+
+	return b.tx.db.wal.Add(b.tx.txid, vkey, val)
 }
 
 func (b *Bucket) Get(key []byte) []byte {
@@ -261,6 +322,11 @@ func (tx *Tx) Commit() error {
 	}
 
 	defer tx.db.rwlock.Unlock()
+
+	err := tx.db.wal.Commit(tx.txid)
+	if err != nil {
+		return err
+	}
 
 	atomic.StoreInt64(tx.db.readTxid, tx.txid)
 
