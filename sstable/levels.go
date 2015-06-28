@@ -58,7 +58,7 @@ func (l *Levels) Merge(req MergeRequest) error {
 
 	merge := NewMerger()
 
-	var l0paths []string
+	var origPaths []string
 
 	if req.Level == 0 {
 		overlap := l.levels[req.Level].FindOverlap(rng)
@@ -70,14 +70,14 @@ func (l *Levels) Merge(req MergeRequest) error {
 			}
 		}
 
-		l0paths = overlap
+		origPaths = overlap
 	} else {
 		err := merge.Add(path)
 		if err != nil {
 			return err
 		}
 
-		l0paths = []string{path}
+		origPaths = []string{path}
 	}
 
 	upLevel := req.Level + 1
@@ -98,7 +98,7 @@ func (l *Levels) Merge(req MergeRequest) error {
 		return err
 	}
 
-	for _, path := range l0paths {
+	for _, path := range origPaths {
 		l.levels[req.Level].Remove(path)
 	}
 
