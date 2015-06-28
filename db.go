@@ -24,7 +24,9 @@ type Stats struct {
 }
 
 type state struct {
-	Txid int64 `json:"txid"`
+	Txid   int64           `json:"txid"`
+	FileId int             `json:"file_id"`
+	Tables *sstable.Levels `json:"levels"`
 }
 
 // DB is a Rivetdb reflected by the state of a particular directory
@@ -34,7 +36,7 @@ type DB struct {
 
 	opts Options
 
-	txid     int64
+	state    state
 	readTxid *int64
 
 	rwlock sync.Mutex
@@ -42,8 +44,6 @@ type DB struct {
 	skip     *skiplist.SkipList
 	root     *Bucket
 	nameLock sync.Mutex
-
-	tables *sstable.Levels
 
 	wal     *WAL
 	walFile string
@@ -88,11 +88,12 @@ func New(path string, opts Options) (*DB, error) {
 		opts:     opts,
 		readTxid: new(int64),
 		skip:     skiplist.New(0),
-		tables:   sstable.NewLevels(10),
 		walFile:  filepath.Join(path, "wal"),
 		lockFile: filepath.Join(path, "lock"),
 		l0limit:  buf,
 	}
+
+	db.state.Tables = sstable.NewLevels(10)
 
 	flags := os.O_CREATE | os.O_RDWR
 
@@ -136,15 +137,12 @@ func (db *DB) loadState() error {
 
 	defer f.Close()
 
-	var cfg state
-
-	err = json.NewDecoder(f).Decode(&cfg)
+	err = json.NewDecoder(f).Decode(&db.state)
 	if err != nil {
 		return err
 	}
 
-	db.txid = cfg.Txid
-	*db.readTxid = cfg.Txid
+	*db.readTxid = db.state.Txid
 
 	return nil
 }
@@ -157,11 +155,7 @@ func (db *DB) saveState() error {
 
 	defer f.Close()
 
-	cfg := state{
-		Txid: db.txid,
-	}
-
-	return json.NewEncoder(f).Encode(&cfg)
+	return json.NewEncoder(f).Encode(db.state)
 }
 
 func (db *DB) reloadWAL() error {
@@ -179,8 +173,9 @@ func (db *DB) reloadWAL() error {
 		return err
 	}
 
-	db.txid = r.MaxCommittedVersion
+	db.state.Txid = r.MaxCommittedVersion
 	*db.readTxid = r.MaxCommittedVersion
+
 	db.skip = list
 
 	return nil
@@ -198,7 +193,10 @@ func (db *DB) Close() error {
 
 	db.wal.Close()
 
-	db.saveState()
+	err = db.saveState()
+	if err != nil {
+		return err
+	}
 
 	return db.unlock()
 }
@@ -212,8 +210,8 @@ func (db *DB) debug(str string, args ...interface{}) {
 }
 
 func (db *DB) flushMemory() error {
-	id := db.nextL0
-	db.nextL0++
+	id := db.state.FileId
+	db.state.FileId++
 
 	path := filepath.Join(db.Path, fmt.Sprintf("level0_%d.sst", id))
 
@@ -231,7 +229,7 @@ func (db *DB) flushMemory() error {
 		return err
 	}
 
-	err = db.tables.Add(0, path)
+	err = db.state.Tables.Add(0, path)
 	if err != nil {
 		return err
 	}
@@ -247,7 +245,7 @@ func (db *DB) get(ver int64, key []byte) ([]byte, bool) {
 		return v, true
 	}
 
-	v, err := db.tables.GetValue(ver, key)
+	v, err := db.state.Tables.GetValue(ver, key)
 	if err != nil {
 		panic(err)
 	}
@@ -265,8 +263,8 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	if writable {
 		db.rwlock.Lock()
 
-		db.txid++
-		txid = db.txid
+		db.state.Txid++
+		txid = db.state.Txid
 	} else {
 		txid = atomic.LoadInt64(db.readTxid)
 	}
@@ -423,7 +421,7 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		err = tx.db.tables.ConsiderMerges(tx.db.Path, tx.txid)
+		err = tx.db.state.Tables.ConsiderMerges(tx.db.Path, tx.txid)
 		if err != nil {
 			return err
 		}

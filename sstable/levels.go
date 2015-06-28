@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -20,6 +21,52 @@ func NewLevels(max int) *Levels {
 	}
 
 	return l
+}
+
+type levelState struct {
+	Paths []string `json:"path"`
+}
+
+type state struct {
+	Levels []levelState `json:"levels"`
+}
+
+func (l *Levels) MarshalJSON() ([]byte, error) {
+	var s state
+
+	for _, level := range l.levels {
+		ls := levelState{}
+
+		for _, r := range level.readers {
+			ls.Paths = append(ls.Paths, r.Path)
+		}
+
+		s.Levels = append(s.Levels, ls)
+	}
+
+	return json.Marshal(&s)
+}
+
+func (l *Levels) UnmarshalJSON(data []byte) error {
+	var s state
+
+	err := json.Unmarshal(data, &s)
+	if err != nil {
+		return err
+	}
+
+	for idx, level := range l.levels {
+		ls := s.Levels[idx]
+
+		for _, path := range ls.Paths {
+			err = level.Add(path)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (l *Levels) Add(num int, path string) error {

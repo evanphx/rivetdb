@@ -255,7 +255,7 @@ func TestDB(t *testing.T) {
 		db2, err := New(dbpath, Options{})
 		require.NoError(t, err)
 
-		assert.Equal(t, int64(1), db2.txid)
+		assert.Equal(t, int64(1), db2.state.Txid)
 
 		tx2, err := db2.Begin(false)
 		require.NoError(t, err)
@@ -341,9 +341,43 @@ func TestDB(t *testing.T) {
 		db2, err := New(dbpath, Options{})
 		require.NoError(t, err)
 
-		assert.Equal(t, db.txid, db2.txid)
+		assert.Equal(t, db.state.Txid, db2.state.Txid)
 		assert.Equal(t, *db.readTxid, *db2.readTxid)
+	})
 
+	n.It("reloads access to existing tables", func() {
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		err = tx.Commit()
+		require.NoError(t, err)
+
+		err = db.Close()
+		require.NoError(t, err)
+
+		db2, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		tx2, err := db2.Begin(false)
+		require.NoError(t, err)
+
+		b2 := tx2.Bucket(buk)
+		require.NotNil(t, b2)
+
+		out := b2.Get(key)
+
+		assert.Equal(t, val, out)
 	})
 
 	n.Meow()
