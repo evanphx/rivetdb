@@ -317,5 +317,34 @@ func TestDB(t *testing.T) {
 		db.Close()
 	})
 
+	n.It("reloads the transaction id", func() {
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		err = tx.Commit()
+		require.NoError(t, err)
+
+		err = db.Close()
+		require.NoError(t, err)
+
+		db2, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		assert.Equal(t, db.txid, db2.txid)
+		assert.Equal(t, *db.readTxid, *db2.readTxid)
+
+	})
+
 	n.Meow()
 }

@@ -2,6 +2,7 @@ package rivetdb
 
 import (
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,10 @@ var ErrDBLocked = errors.New("db locked")
 // Stats holds statistics about the DB's operation
 type Stats struct {
 	NumFlushes int
+}
+
+type state struct {
+	Txid int64 `json:"txid"`
 }
 
 // DB is a Rivetdb reflected by the state of a particular directory
@@ -103,6 +108,11 @@ func New(path string, opts Options) (*DB, error) {
 
 	db.lock = lck
 
+	err = db.loadState()
+	if err != nil {
+		return nil, err
+	}
+
 	err = db.reloadWAL()
 	if err != nil {
 		return nil, err
@@ -116,6 +126,42 @@ func New(path string, opts Options) (*DB, error) {
 	db.wal = wal
 
 	return db, nil
+}
+
+func (db *DB) loadState() error {
+	f, err := os.Open(filepath.Join(db.Path, "state"))
+	if err != nil {
+		return nil
+	}
+
+	defer f.Close()
+
+	var cfg state
+
+	err = json.NewDecoder(f).Decode(&cfg)
+	if err != nil {
+		return err
+	}
+
+	db.txid = cfg.Txid
+	*db.readTxid = cfg.Txid
+
+	return nil
+}
+
+func (db *DB) saveState() error {
+	f, err := os.Create(filepath.Join(db.Path, "state"))
+	if err != nil {
+		return nil
+	}
+
+	defer f.Close()
+
+	cfg := state{
+		Txid: db.txid,
+	}
+
+	return json.NewEncoder(f).Encode(&cfg)
 }
 
 func (db *DB) reloadWAL() error {
@@ -151,6 +197,8 @@ func (db *DB) Close() error {
 	}
 
 	db.wal.Close()
+
+	db.saveState()
 
 	return db.unlock()
 }
