@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/evanphx/rivetdb/skiplist"
 	"github.com/evanphx/rivetdb/sstable"
 )
+
+var ErrDBLocked = errors.New("db locked")
 
 type Stats struct {
 	NumFlushes int
@@ -36,6 +39,9 @@ type DB struct {
 
 	wal     *WAL
 	walFile string
+
+	lock     *os.File
+	lockFile string
 
 	memoryBytes int
 	nextL0      int
@@ -63,7 +69,7 @@ func DefaultOptions() Options {
 	}
 }
 
-func New(path string, opts Options) *DB {
+func New(path string, opts Options) (*DB, error) {
 	os.MkdirAll(path, 0755)
 
 	buf := opts.MemoryBuffer
@@ -78,22 +84,39 @@ func New(path string, opts Options) *DB {
 		skip:     skiplist.New(0),
 		tables:   sstable.NewLevels(10),
 		walFile:  filepath.Join(path, "wal"),
+		lockFile: filepath.Join(path, "lock"),
 		l0limit:  buf,
 	}
 
-	err := db.reloadWAL()
+	flags := os.O_CREATE | os.O_RDWR
+
+	lck, err := os.OpenFile(db.lockFile, flags, 0600)
 	if err != nil {
-		panic(err)
+		return nil, ErrDBLocked
+	}
+
+	err = syscall.Flock(int(lck.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		return nil, ErrDBLocked
+	}
+
+	fmt.Printf("flock: %s\n", err)
+
+	db.lock = lck
+
+	err = db.reloadWAL()
+	if err != nil {
+		return nil, err
 	}
 
 	wal, err := NewWAL(db.walFile)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	db.wal = wal
 
-	return db
+	return db, nil
 }
 
 func (db *DB) reloadWAL() error {
@@ -118,13 +141,19 @@ func (db *DB) reloadWAL() error {
 	return nil
 }
 
+func (db *DB) unlock() error {
+	return syscall.Flock(int(db.lock.Fd()), syscall.LOCK_UN)
+}
+
 func (db *DB) Close() error {
 	err := db.flushMemory()
 	if err != nil {
 		return err
 	}
 
-	return db.wal.Close()
+	db.wal.Close()
+
+	return db.unlock()
 }
 
 func (db *DB) debug(str string, args ...interface{}) {

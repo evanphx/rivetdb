@@ -27,7 +27,8 @@ func TestDB(t *testing.T) {
 	val := []byte("hello world value")
 
 	n.It("handles an empty db", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -39,7 +40,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("can write values and see them", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -59,7 +61,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("exposes values from previous transactions", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -85,7 +88,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("doesn't expose pre-commit written values", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -112,7 +116,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("tracks the memory used by each pair", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -131,7 +136,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("flushes data to a new level 0 table", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -174,11 +180,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("flushes data to a new level 0 table automatically", func() {
-		opts := Options{
-			MemoryBuffer: 10,
-		}
-
-		db := New(dbpath, opts)
+		db, err := New(dbpath, Options{MemoryBuffer: 10})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -220,7 +223,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("writes values to a WAL log that can be recovered", func() {
-		db := New(dbpath, Options{})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -236,6 +240,9 @@ func TestDB(t *testing.T) {
 		err = tx.Commit()
 		require.NoError(t, err)
 
+		err = db.unlock()
+		require.NoError(t, err)
+
 		r, err := NewWALReader(db.walFile)
 		require.NoError(t, err)
 
@@ -245,7 +252,8 @@ func TestDB(t *testing.T) {
 		v := list.AllEntries()
 		require.True(t, v.Next())
 
-		db2 := New(dbpath, Options{})
+		db2, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		assert.Equal(t, int64(1), db2.txid)
 
@@ -263,7 +271,8 @@ func TestDB(t *testing.T) {
 	})
 
 	n.It("flushes values to L0 on close", func() {
-		db := New(dbpath, Options{Debug: true})
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
 
 		defer os.RemoveAll(dbpath)
 
@@ -294,6 +303,18 @@ func TestDB(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, val, out)
+	})
+
+	n.It("locks the path", func() {
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		defer os.RemoveAll(dbpath)
+
+		_, err = New(dbpath, Options{})
+		assert.Equal(t, ErrDBLocked, err)
+
+		db.Close()
 	})
 
 	n.Meow()

@@ -122,6 +122,15 @@ func (w *WALReader) IntoList() (*skiplist.SkipList, error) {
 		ent LogEntry
 	)
 
+	fi, err := w.f.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	if fi.Size() < 4 {
+		return list, nil
+	}
+
 	for {
 		_, err := w.f.Seek(-4, os.SEEK_CUR)
 		if err != nil {
