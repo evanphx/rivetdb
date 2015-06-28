@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/evanphx/rivetdb/sstable"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vektra/neko"
@@ -257,6 +258,40 @@ func TestDB(t *testing.T) {
 		require.NotNil(t, b2)
 
 		out := b2.Get(key)
+
+		assert.Equal(t, val, out)
+	})
+
+	n.It("flushes values to L0 on close", func() {
+		db := New(dbpath, Options{Debug: true})
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		fkey := b.vkey(key)
+
+		err = tx.Commit()
+		require.NoError(t, err)
+
+		err = db.Close()
+		require.NoError(t, err)
+
+		_, err = os.Stat(db.walFile)
+		require.NotNil(t, err)
+
+		r, err := sstable.NewReader(filepath.Join(dbpath, "level0_0.sst"))
+		require.NoError(t, err)
+
+		out, err := r.Get(1, fkey)
+		require.NoError(t, err)
 
 		assert.Equal(t, val, out)
 	})

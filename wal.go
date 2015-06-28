@@ -10,8 +10,9 @@ import (
 )
 
 type WAL struct {
-	f   *os.File
-	buf []byte
+	path string
+	f    *os.File
+	buf  []byte
 }
 
 const (
@@ -25,9 +26,19 @@ func NewWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
-	wal := &WAL{f: f, buf: make([]byte, 1024)}
+	wal := &WAL{
+		path: path,
+		f:    f,
+		buf:  make([]byte, 1024),
+	}
 
 	return wal, err
+}
+
+func (w *WAL) Close() error {
+	w.f.Close()
+
+	return os.Remove(w.path)
 }
 
 func (w *WAL) appendEntry(ent *LogEntry) error {

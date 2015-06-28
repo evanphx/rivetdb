@@ -118,6 +118,15 @@ func (db *DB) reloadWAL() error {
 	return nil
 }
 
+func (db *DB) Close() error {
+	err := db.flushMemory()
+	if err != nil {
+		return err
+	}
+
+	return db.wal.Close()
+}
+
 func (db *DB) debug(str string, args ...interface{}) {
 	if !db.opts.Debug {
 		return
@@ -334,6 +343,11 @@ func (tx *Tx) Commit() error {
 
 	if tx.db.memoryBytes > tx.db.l0limit {
 		err := tx.db.flushMemory()
+		if err != nil {
+			return err
+		}
+
+		err = tx.db.tables.ConsiderMerges(tx.db.Path, tx.txid)
 		if err != nil {
 			return err
 		}
