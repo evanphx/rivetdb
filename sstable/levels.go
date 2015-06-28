@@ -1,6 +1,10 @@
 package sstable
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+)
 
 type Levels struct {
 	levels []*Level
@@ -54,9 +58,26 @@ func (l *Levels) Merge(req MergeRequest) error {
 
 	merge := NewMerger()
 
-	err := merge.Add(path)
-	if err != nil {
-		return err
+	var l0paths []string
+
+	if req.Level == 0 {
+		overlap := l.levels[req.Level].FindOverlap(rng)
+
+		for _, path := range overlap {
+			err := merge.Add(path)
+			if err != nil {
+				return err
+			}
+		}
+
+		l0paths = overlap
+	} else {
+		err := merge.Add(path)
+		if err != nil {
+			return err
+		}
+
+		l0paths = []string{path}
 	}
 
 	upLevel := req.Level + 1
@@ -72,16 +93,58 @@ func (l *Levels) Merge(req MergeRequest) error {
 		}
 	}
 
-	err = merge.MergeInto(req.File, req.MinVersion)
+	err := merge.MergeInto(req.File, req.MinVersion)
 	if err != nil {
 		return err
 	}
 
-	l.levels[req.Level].Remove(path)
+	for _, path := range l0paths {
+		l.levels[req.Level].Remove(path)
+	}
 
 	for _, path := range overlap {
 		l.levels[upLevel].Remove(path)
 	}
 
 	return l.levels[upLevel].Add(req.File)
+}
+
+const (
+	cMeg        int64 = 1024 * 1024
+	cLevel0Size int64 = 4 * cMeg
+)
+
+func levelMax(level int) int64 {
+	if level == 0 {
+		return cLevel0Size
+	}
+
+	megs := int64(10)
+
+	for i := 1; i < level; i++ {
+		megs *= 10
+	}
+
+	return megs * cMeg
+}
+
+func (ls *Levels) ConsiderMerges(dir string, ver int64) error {
+	for idx, l := range ls.levels {
+
+		if l.Size() >= levelMax(idx) {
+			file := filepath.Join(dir, fmt.Sprintf("level%d_%d.sst", idx, ver))
+
+			err := ls.Merge(
+				MergeRequest{
+					Level:      idx,
+					MinVersion: ver,
+					File:       file,
+				})
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
