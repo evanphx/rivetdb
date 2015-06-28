@@ -14,12 +14,15 @@ import (
 	"github.com/evanphx/rivetdb/sstable"
 )
 
+// Indicates that the DB is currently locked by another process
 var ErrDBLocked = errors.New("db locked")
 
+// Stats holds statistics about the DB's operation
 type Stats struct {
 	NumFlushes int
 }
 
+// DB is a Rivetdb reflected by the state of a particular directory
 type DB struct {
 	Path  string
 	Stats Stats
@@ -48,6 +51,7 @@ type DB struct {
 	l0limit     int
 }
 
+// Tx is a database transaction
 type Tx struct {
 	db       *DB
 	txid     int64
@@ -56,19 +60,16 @@ type Tx struct {
 	memoryBytes int
 }
 
+// The default number of bytes to hold in memory before flushing it to disk
 const DefaultMemoryBuffer = 1024 * 1024
 
+// Options is the controlable values that can be set for a database on open
 type Options struct {
 	MemoryBuffer int
 	Debug        bool
 }
 
-func DefaultOptions() Options {
-	return Options{
-		MemoryBuffer: DefaultMemoryBuffer,
-	}
-}
-
+// New opens a database for the data in +path+
 func New(path string, opts Options) (*DB, error) {
 	os.MkdirAll(path, 0755)
 
@@ -99,8 +100,6 @@ func New(path string, opts Options) (*DB, error) {
 	if err != nil {
 		return nil, ErrDBLocked
 	}
-
-	fmt.Printf("flock: %s\n", err)
 
 	db.lock = lck
 
