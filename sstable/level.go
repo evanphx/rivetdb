@@ -1,7 +1,9 @@
 package sstable
 
-import "math/rand"
-import "os"
+import (
+	"math/rand"
+	"os"
+)
 
 type Level struct {
 	readers []*Reader
@@ -44,6 +46,40 @@ func (l *Level) Remove(path string) {
 			return
 		}
 	}
+}
+
+type LevelEdit struct {
+	Add    []string
+	Remove []string
+}
+
+func (l *Level) Edit(e LevelEdit) (*Level, error) {
+	level := NewLevel()
+
+	for _, r := range l.readers {
+		add := true
+
+		for _, p := range e.Remove {
+			if r.Path == p {
+				add = false
+				break
+			}
+		}
+
+		if add {
+			r.Ref()
+			level.readers = append(level.readers, r)
+		}
+	}
+
+	for _, path := range e.Add {
+		err := level.Add(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return level, nil
 }
 
 func (l *Level) Get(ver int64, key []byte) ([]byte, error) {

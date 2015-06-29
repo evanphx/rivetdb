@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"unsafe"
 
 	"github.com/evanphx/rivetdb/skiplist"
 	"github.com/evanphx/rivetdb/sstable"
@@ -27,6 +28,18 @@ type state struct {
 	Txid   int64           `json:"txid"`
 	FileId int             `json:"file_id"`
 	Tables *sstable.Levels `json:"levels"`
+
+	atomicTables unsafe.Pointer
+}
+
+func (s *state) LoadTables() *sstable.Levels {
+	ptr := atomic.LoadPointer(&s.atomicTables)
+	return (*sstable.Levels)(ptr)
+}
+
+func (s *state) SetTables(t *sstable.Levels) {
+	atomic.StorePointer(&s.atomicTables, (unsafe.Pointer)(t))
+	s.Tables = t
 }
 
 // DB is a Rivetdb reflected by the state of a particular directory
@@ -63,6 +76,8 @@ type Tx struct {
 	writable bool
 
 	memoryBytes int
+
+	tables *sstable.Levels
 }
 
 // The default number of bytes to hold in memory before flushing it to disk
@@ -93,7 +108,7 @@ func New(path string, opts Options) (*DB, error) {
 		l0limit:  buf,
 	}
 
-	db.state.Tables = sstable.NewLevels(10)
+	db.state.SetTables(sstable.NewLevels(10))
 
 	flags := os.O_CREATE | os.O_RDWR
 
@@ -229,23 +244,31 @@ func (db *DB) flushMemory() error {
 		return err
 	}
 
-	err = db.state.Tables.Add(0, path)
+	edits := sstable.LevelsEdit{
+		0: sstable.LevelEdit{
+			Add: []string{path},
+		},
+	}
+
+	levels, err := db.state.LoadTables().Edit(edits)
 	if err != nil {
 		return err
 	}
+
+	db.state.SetTables(levels)
 
 	db.skip = skiplist.New(0)
 	db.memoryBytes = 0
 	return nil
 }
 
-func (db *DB) get(ver int64, key []byte) ([]byte, bool) {
-	v, ok := db.skip.Get(ver, key)
+func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
+	v, ok := tx.db.skip.Get(ver, key)
 	if ok {
 		return v, true
 	}
 
-	v, err := db.state.Tables.GetValue(ver, key)
+	v, err := tx.tables.GetValue(ver, key)
 	if err != nil {
 		panic(err)
 	}
@@ -269,7 +292,14 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txid = atomic.LoadInt64(db.readTxid)
 	}
 
-	return &Tx{db: db, txid: txid, writable: writable}, nil
+	tx := &Tx{
+		db:       db,
+		txid:     txid,
+		writable: writable,
+		tables:   db.state.LoadTables(),
+	}
+
+	return tx, nil
 }
 
 func (tx *Tx) Id() int64 {
@@ -298,7 +328,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.get(b.tx.txid, key)
+	_, ok := b.tx.get(b.tx.txid, key)
 	if !ok {
 		return nil
 	}
@@ -325,7 +355,7 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.get(b.tx.txid, key)
+	_, ok := b.tx.get(b.tx.txid, key)
 	if ok {
 		return nil, ErrBucketExists
 	}
@@ -357,7 +387,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 
 	key := append([]byte{'b'}, sum...)
 
-	_, ok := b.tx.db.get(b.tx.txid, key)
+	_, ok := b.tx.get(b.tx.txid, key)
 	if !ok {
 		b.tx.db.skip.Set(b.tx.txid, key, name)
 
@@ -389,7 +419,7 @@ func (b *Bucket) Put(key, val []byte) error {
 }
 
 func (b *Bucket) Get(key []byte) []byte {
-	val, ok := b.tx.db.get(b.tx.txid, b.vkey(key))
+	val, ok := b.tx.get(b.tx.txid, b.vkey(key))
 	if ok {
 		return val
 	}
@@ -421,10 +451,14 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		err = tx.db.state.Tables.ConsiderMerges(tx.db.Path, tx.txid)
+		levels := tx.db.state.LoadTables()
+
+		levels, err = levels.ConsiderMerges(tx.db.Path, tx.txid)
 		if err != nil {
 			return err
 		}
+
+		tx.db.state.SetTables(levels)
 	}
 
 	return nil

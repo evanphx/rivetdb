@@ -57,7 +57,8 @@ func (r KeyRange) Overlap(o KeyRange) bool {
 }
 
 type Reader struct {
-	f *os.File
+	f   *os.File
+	ref int
 
 	hdr     FileHeader
 	indexes []*IndexEntry
@@ -73,8 +74,9 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	r := &Reader{
-		Path: path,
 		f:    f,
+		ref:  1,
+		Path: path,
 	}
 
 	err = r.init()
@@ -85,8 +87,18 @@ func NewReader(path string) (*Reader, error) {
 	return r, nil
 }
 
+func (r *Reader) Ref() {
+	r.ref++
+}
+
 func (r *Reader) Close() error {
-	return r.f.Close()
+	r.ref--
+
+	if r.ref == 0 {
+		return r.f.Close()
+	}
+
+	return nil
 }
 
 func (r *Reader) MayContain(key []byte) bool {

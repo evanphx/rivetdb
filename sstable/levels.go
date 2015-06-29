@@ -73,6 +73,27 @@ func (l *Levels) Add(num int, path string) error {
 	return l.levels[num].Add(path)
 }
 
+type LevelsEdit map[int]LevelEdit
+
+func (l *Levels) Edit(e LevelsEdit) (*Levels, error) {
+	levels := &Levels{}
+
+	for idx, level := range l.levels {
+		if le, ok := e[idx]; ok {
+			cpy, err := level.Edit(le)
+			if err != nil {
+				return nil, err
+			}
+
+			levels.levels = append(levels.levels, cpy)
+		} else {
+			levels.levels = append(levels.levels, level)
+		}
+	}
+
+	return levels, nil
+}
+
 func (l *Levels) At(num int) *Level {
 	return l.levels[num]
 }
@@ -96,9 +117,9 @@ type MergeRequest struct {
 
 var ErrTopLevel = errors.New("top level, nowhere to merge to")
 
-func (l *Levels) Merge(req MergeRequest) error {
+func (l *Levels) Merge(req MergeRequest) (*Levels, error) {
 	if req.Level >= len(l.levels)-1 {
-		return ErrTopLevel
+		return nil, ErrTopLevel
 	}
 
 	path, rng := l.levels[req.Level].PickRandom()
@@ -113,7 +134,7 @@ func (l *Levels) Merge(req MergeRequest) error {
 		for _, path := range overlap {
 			err := merge.Add(path)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 
@@ -121,7 +142,7 @@ func (l *Levels) Merge(req MergeRequest) error {
 	} else {
 		err := merge.Add(path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		origPaths = []string{path}
@@ -136,24 +157,24 @@ func (l *Levels) Merge(req MergeRequest) error {
 	for _, path := range overlap {
 		err := merge.Add(path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	err := merge.MergeInto(req.File, req.MinVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	for _, path := range origPaths {
-		l.levels[req.Level].Remove(path)
-	}
-
-	for _, path := range overlap {
-		l.levels[upLevel].Remove(path)
-	}
-
-	return l.levels[upLevel].Add(req.File)
+	return l.Edit(LevelsEdit{
+		req.Level: LevelEdit{
+			Remove: origPaths,
+		},
+		upLevel: LevelEdit{
+			Remove: overlap,
+			Add:    []string{req.File},
+		},
+	})
 }
 
 const (
@@ -175,23 +196,26 @@ func levelMax(level int) int64 {
 	return megs * cMeg
 }
 
-func (ls *Levels) ConsiderMerges(dir string, ver int64) error {
-	for idx, l := range ls.levels {
+func (ls *Levels) ConsiderMerges(dir string, ver int64) (*Levels, error) {
+	levels := ls
 
+	for idx, l := range ls.levels {
 		if l.Size() >= levelMax(idx) {
 			file := filepath.Join(dir, fmt.Sprintf("level%d_%d.sst", idx, ver))
 
-			err := ls.Merge(
+			next, err := ls.Merge(
 				MergeRequest{
 					Level:      idx,
 					MinVersion: ver,
 					File:       file,
 				})
 			if err != nil {
-				return err
+				return nil, err
 			}
+
+			levels = next
 		}
 	}
 
-	return nil
+	return levels, nil
 }

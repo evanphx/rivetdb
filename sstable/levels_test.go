@@ -153,13 +153,13 @@ func TestLevels(t *testing.T) {
 		pathout := filepath.Join(tmpdir, "out")
 		defer os.Remove(pathout)
 
-		err = levels.Merge(MergeRequest{Level: 0, File: pathout})
+		update, err := levels.Merge(MergeRequest{Level: 0, File: pathout})
 		require.NoError(t, err)
 
-		assert.Equal(t, 0, len(levels.At(0).readers))
-		assert.Equal(t, 1, len(levels.At(1).readers))
+		assert.Equal(t, 0, len(update.At(0).readers))
+		assert.Equal(t, 1, len(update.At(1).readers))
 
-		v, err := levels.GetValue(2, []byte("2"))
+		v, err := update.GetValue(2, []byte("2"))
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("value2"), v)
@@ -204,13 +204,13 @@ func TestLevels(t *testing.T) {
 
 		levels.levels[1].size = 10 * 1024 * 1024
 
-		err = levels.ConsiderMerges(tmpdir, 4)
+		update, err := levels.ConsiderMerges(tmpdir, 4)
 		require.NoError(t, err)
 
-		assert.Equal(t, 0, len(levels.At(1).readers))
-		assert.Equal(t, 1, len(levels.At(2).readers))
+		assert.Equal(t, 0, len(update.At(1).readers))
+		assert.Equal(t, 1, len(update.At(2).readers))
 
-		v, err := levels.GetValue(2, []byte("2"))
+		v, err := update.GetValue(2, []byte("2"))
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("value2"), v)
@@ -267,18 +267,18 @@ func TestLevels(t *testing.T) {
 
 		levels.levels[0].size = 4 * 1024 * 1024
 
-		err = levels.ConsiderMerges(tmpdir, 4)
+		update, err := levels.ConsiderMerges(tmpdir, 4)
 		require.NoError(t, err)
 
-		assert.Equal(t, 0, len(levels.At(0).readers))
-		assert.Equal(t, 1, len(levels.At(1).readers))
+		assert.Equal(t, 0, len(update.At(0).readers))
+		assert.Equal(t, 1, len(update.At(1).readers))
 
-		v, err := levels.GetValue(2, []byte("5"))
+		v, err := update.GetValue(2, []byte("5"))
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("value5"), v)
 
-		v, err = levels.GetValue(2, []byte("4"))
+		v, err = update.GetValue(2, []byte("4"))
 		require.NoError(t, err)
 
 		assert.Equal(t, []byte("value4"), v)
