@@ -1,11 +1,12 @@
 package sstable
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
 	"os"
+
+	"github.com/edsrzf/mmap-go"
 )
 
 type KeyRange struct {
@@ -63,6 +64,8 @@ type Reader struct {
 	hdr     FileHeader
 	indexes []*IndexEntry
 
+	data mmap.MMap
+
 	Path  string
 	Range KeyRange
 }
@@ -95,6 +98,7 @@ func (r *Reader) Close() error {
 	r.ref--
 
 	if r.ref == 0 {
+		r.data.Unmap()
 		return r.f.Close()
 	}
 
@@ -129,12 +133,12 @@ func (r *Reader) readIndex(data []byte) (*IndexEntry, error) {
 }
 
 func (r *Reader) init() error {
-	buf := make([]byte, 1024)
-
-	_, err := io.ReadFull(r.f, buf)
+	buf, err := mmap.Map(r.f, mmap.RDONLY, 0)
 	if err != nil {
 		return err
 	}
+
+	r.data = buf
 
 	hsz := binary.BigEndian.Uint16(buf)
 
@@ -145,17 +149,11 @@ func (r *Reader) init() error {
 
 	idx := r.hdr.GetIndex()
 
-	_, err = r.f.Seek(int64(idx), os.SEEK_SET)
-	if err != nil {
-		return err
+	if int(idx) > len(r.data) {
+		return io.EOF
 	}
 
-	idxData := make([]byte, r.hdr.GetIndexSize())
-
-	_, err = io.ReadFull(r.f, idxData)
-	if err != nil {
-		return err
-	}
+	idxData := r.data[idx:]
 
 	data := idxData
 
@@ -216,19 +214,11 @@ func (r *Reader) readEntry(off int64) (*Entry, error) {
 		return nil, err
 	}
 
-	br := bufio.NewReader(r.f)
+	buf := r.data[off:]
 
-	entSz, err := binary.ReadUvarint(br)
-	if err != nil {
-		return nil, err
-	}
+	entSz, sz := binary.Uvarint(buf)
 
-	ebuf := make([]byte, entSz)
-
-	_, err = br.Read(ebuf)
-	if err != nil {
-		return nil, err
-	}
+	ebuf := buf[sz : sz+int(entSz)]
 
 	var entry Entry
 
