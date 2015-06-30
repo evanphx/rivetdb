@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"unsafe"
 
 	"github.com/evanphx/rivetdb/skiplist"
 	"github.com/evanphx/rivetdb/sstable"
@@ -29,17 +28,34 @@ type state struct {
 	FileId int             `json:"file_id"`
 	Tables *sstable.Levels `json:"levels"`
 
-	atomicTables unsafe.Pointer
+	tableLock sync.Mutex
 }
 
 func (s *state) LoadTables() *sstable.Levels {
-	ptr := atomic.LoadPointer(&s.atomicTables)
-	return (*sstable.Levels)(ptr)
+	s.tableLock.Lock()
+
+	tbl := s.Tables
+	tbl.Ref()
+
+	s.tableLock.Unlock()
+
+	return tbl
 }
 
 func (s *state) SetTables(t *sstable.Levels) {
-	atomic.StorePointer(&s.atomicTables, (unsafe.Pointer)(t))
-	s.Tables = t
+	s.tableLock.Lock()
+
+	old := s.Tables
+
+	if t != old {
+		t.Ref()
+
+		s.Tables = t
+	} else if old != nil {
+		old.Discard()
+	}
+
+	s.tableLock.Unlock()
 }
 
 // DB is a Rivetdb reflected by the state of a particular directory
@@ -250,10 +266,15 @@ func (db *DB) flushMemory() error {
 		},
 	}
 
-	levels, err := db.state.LoadTables().Edit(edits)
+	tables := db.state.LoadTables()
+	defer tables.Discard()
+
+	levels, err := tables.Edit(edits)
 	if err != nil {
 		return err
 	}
+
+	defer levels.Discard()
 
 	db.state.SetTables(levels)
 
@@ -445,6 +466,8 @@ func (tx *Tx) Commit() error {
 
 	tx.db.memoryBytes += tx.memoryBytes
 
+	tx.tables.Discard()
+
 	if tx.db.memoryBytes > tx.db.l0limit {
 		err := tx.db.flushMemory()
 		if err != nil {
@@ -452,13 +475,17 @@ func (tx *Tx) Commit() error {
 		}
 
 		levels := tx.db.state.LoadTables()
+		defer levels.Discard()
 
-		levels, err = levels.ConsiderMerges(tx.db.Path, tx.txid)
+		updates, err := levels.ConsiderMerges(tx.db.Path, tx.txid)
 		if err != nil {
 			return err
 		}
 
-		tx.db.state.SetTables(levels)
+		if levels != updates {
+			tx.db.state.SetTables(updates)
+			updates.Discard()
+		}
 	}
 
 	return nil

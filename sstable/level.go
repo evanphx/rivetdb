@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"log"
 	"math/rand"
 	"os"
 )
@@ -34,6 +35,15 @@ func (l *Level) Add(path string) error {
 	l.readers = append(l.readers, r)
 
 	return nil
+}
+
+func (l *Level) Discard() {
+	for _, r := range l.readers {
+		err := r.Close()
+		if err != nil {
+			log.Printf("Error closing reader: %s", err)
+		}
+	}
 }
 
 func (l *Level) Remove(path string) {

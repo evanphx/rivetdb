@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 )
 
 type Levels struct {
 	levels []*Level
+	refs   int32
 }
 
 func NewLevels(max int) *Levels {
 	l := &Levels{
 		levels: make([]*Level, max),
+		refs:   1,
 	}
 
 	for idx, _ := range l.levels {
@@ -21,6 +24,20 @@ func NewLevels(max int) *Levels {
 	}
 
 	return l
+}
+
+func (l *Levels) Ref() {
+	atomic.AddInt32(&l.refs, 1)
+}
+
+func (l *Levels) Discard() {
+	cnt := atomic.AddInt32(&l.refs, -1)
+
+	if cnt == 0 {
+		for _, level := range l.levels {
+			level.Discard()
+		}
+	}
 }
 
 type levelState struct {
@@ -90,6 +107,8 @@ func (l *Levels) Edit(e LevelsEdit) (*Levels, error) {
 			levels.levels = append(levels.levels, level)
 		}
 	}
+
+	levels.Ref()
 
 	return levels, nil
 }
@@ -215,6 +234,10 @@ func (ls *Levels) ConsiderMerges(dir string, ver int64) (*Levels, error) {
 
 			levels = next
 		}
+	}
+
+	if levels != ls {
+		levels.Ref()
 	}
 
 	return levels, nil
