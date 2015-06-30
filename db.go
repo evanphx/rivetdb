@@ -24,38 +24,39 @@ type Stats struct {
 }
 
 type state struct {
-	Txid   int64           `json:"txid"`
-	FileId int             `json:"file_id"`
-	Tables *sstable.Levels `json:"levels"`
+	Txid   int64 `json:"txid"`
+	FileId int   `json:"file_id"`
 
-	tableLock sync.Mutex
+	Version *Version `json:"version"`
+
+	versionLock sync.Mutex
 }
 
-func (s *state) LoadTables() *sstable.Levels {
-	s.tableLock.Lock()
+func (s *state) LoadVersion() *Version {
+	s.versionLock.Lock()
 
-	tbl := s.Tables
-	tbl.Ref()
+	ver := s.Version
+	ver.Ref()
 
-	s.tableLock.Unlock()
+	s.versionLock.Unlock()
 
-	return tbl
+	return ver
 }
 
-func (s *state) SetTables(t *sstable.Levels) {
-	s.tableLock.Lock()
+func (s *state) SetVersion(t *Version) {
+	s.versionLock.Lock()
 
-	old := s.Tables
+	old := s.Version
 
 	if t != old {
 		t.Ref()
 
-		s.Tables = t
+		s.Version = t
 	} else if old != nil {
 		old.Discard()
 	}
 
-	s.tableLock.Unlock()
+	s.versionLock.Unlock()
 }
 
 // DB is a Rivetdb reflected by the state of a particular directory
@@ -70,7 +71,6 @@ type DB struct {
 
 	rwlock sync.Mutex
 
-	skip     *skiplist.SkipList
 	root     *Bucket
 	nameLock sync.Mutex
 
@@ -93,7 +93,7 @@ type Tx struct {
 
 	memoryBytes int
 
-	tables *sstable.Levels
+	version *Version
 }
 
 // The default number of bytes to hold in memory before flushing it to disk
@@ -118,13 +118,16 @@ func New(path string, opts Options) (*DB, error) {
 		Path:     path,
 		opts:     opts,
 		readTxid: new(int64),
-		skip:     skiplist.New(0),
 		walFile:  filepath.Join(path, "wal"),
 		lockFile: filepath.Join(path, "lock"),
 		l0limit:  buf,
 	}
 
-	db.state.SetTables(sstable.NewLevels(10))
+	db.state.SetVersion(&Version{
+		Id:     0,
+		Tables: sstable.NewLevels(10),
+		mem:    skiplist.New(0),
+	})
 
 	flags := os.O_CREATE | os.O_RDWR
 
@@ -207,7 +210,7 @@ func (db *DB) reloadWAL() error {
 	db.state.Txid = r.MaxCommittedVersion
 	*db.readTxid = r.MaxCommittedVersion
 
-	db.skip = list
+	db.state.Version.mem = list
 
 	return nil
 }
@@ -250,7 +253,10 @@ func (db *DB) flushMemory() error {
 
 	db.Stats.NumFlushes++
 
-	zw, err := NewZeroWriter(path, db.skip)
+	ver := db.state.LoadVersion()
+	defer ver.Discard()
+
+	zw, err := NewZeroWriter(path, ver.mem)
 	if err != nil {
 		return err
 	}
@@ -266,30 +272,26 @@ func (db *DB) flushMemory() error {
 		},
 	}
 
-	tables := db.state.LoadTables()
-	defer tables.Discard()
-
-	levels, err := tables.Edit(edits)
+	levels, err := ver.Tables.Edit(edits)
 	if err != nil {
 		return err
 	}
 
 	defer levels.Discard()
 
-	db.state.SetTables(levels)
+	db.state.SetVersion(NewVersion(db.state.Txid, levels))
 
-	db.skip = skiplist.New(0)
 	db.memoryBytes = 0
 	return nil
 }
 
 func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
-	v, ok := tx.db.skip.Get(ver, key)
+	v, ok := tx.version.mem.Get(ver, key)
 	if ok {
 		return v, true
 	}
 
-	v, err := tx.tables.GetValue(ver, key)
+	v, err := tx.version.Tables.GetValue(ver, key)
 	if err != nil {
 		panic(err)
 	}
@@ -317,7 +319,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		db:       db,
 		txid:     txid,
 		writable: writable,
-		tables:   db.state.LoadTables(),
+		version:  db.state.LoadVersion(),
 	}
 
 	return tx, nil
@@ -381,7 +383,7 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, ErrBucketExists
 	}
 
-	b.tx.db.skip.Set(b.tx.txid, key, name)
+	b.tx.version.mem.Set(b.tx.txid, key, name)
 
 	err := b.tx.db.wal.Add(b.tx.txid, key, name)
 	if err != nil {
@@ -410,7 +412,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 
 	_, ok := b.tx.get(b.tx.txid, key)
 	if !ok {
-		b.tx.db.skip.Set(b.tx.txid, key, name)
+		b.tx.version.mem.Set(b.tx.txid, key, name)
 
 		err := b.tx.db.wal.Add(b.tx.txid, key, name)
 		if err != nil {
@@ -434,7 +436,7 @@ func (b *Bucket) Put(key, val []byte) error {
 
 	vkey := b.vkey(key)
 
-	b.tx.db.skip.Set(b.tx.txid, vkey, val)
+	b.tx.version.mem.Set(b.tx.txid, vkey, val)
 
 	return b.tx.db.wal.Add(b.tx.txid, vkey, val)
 }
@@ -466,7 +468,7 @@ func (tx *Tx) Commit() error {
 
 	tx.db.memoryBytes += tx.memoryBytes
 
-	tx.tables.Discard()
+	tx.version.Discard()
 
 	if tx.db.memoryBytes > tx.db.l0limit {
 		err := tx.db.flushMemory()
@@ -474,16 +476,16 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		levels := tx.db.state.LoadTables()
-		defer levels.Discard()
+		ver := tx.db.state.LoadVersion()
+		defer ver.Discard()
 
-		updates, err := levels.ConsiderMerges(tx.db.Path, tx.txid)
+		updates, err := ver.Tables.ConsiderMerges(tx.db.Path, tx.txid)
 		if err != nil {
 			return err
 		}
 
-		if levels != updates {
-			tx.db.state.SetTables(updates)
+		if ver.Tables != updates {
+			tx.db.state.SetVersion(ver.UpdateTables(updates))
 			updates.Discard()
 		}
 	}

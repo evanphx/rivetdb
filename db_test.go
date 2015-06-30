@@ -165,7 +165,7 @@ func TestDB(t *testing.T) {
 
 		assert.True(t, fi.Size() > 0)
 
-		vi := db.skip.AllEntries()
+		vi := db.state.Version.mem.AllEntries()
 
 		assert.False(t, vi.Next())
 
@@ -208,7 +208,7 @@ func TestDB(t *testing.T) {
 
 		assert.True(t, fi.Size() > 0)
 
-		vi := db.skip.AllEntries()
+		vi := db.state.Version.mem.AllEntries()
 
 		assert.False(t, vi.Next())
 
