@@ -197,6 +197,8 @@ func TestDB(t *testing.T) {
 		err = tx.Commit()
 		require.NoError(t, err)
 
+		db.WaitIdle()
+
 		assert.Equal(t, 1, db.Stats.NumFlushes)
 
 		assert.Equal(t, 0, db.memoryBytes)

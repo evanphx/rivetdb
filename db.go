@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/evanphx/rivetdb/skiplist"
 	"github.com/evanphx/rivetdb/sstable"
+	"gopkg.in/tomb.v2"
 )
 
 // Indicates that the DB is currently locked by another process
@@ -83,6 +85,13 @@ type DB struct {
 	memoryBytes int
 	nextL0      int
 	l0limit     int
+
+	t          tomb.Tomb
+	compactReq chan *Version
+
+	taskCount int
+	idleLock  sync.Mutex
+	idleCond  *sync.Cond
 }
 
 // Tx is a database transaction
@@ -115,13 +124,16 @@ func New(path string, opts Options) (*DB, error) {
 	}
 
 	db := &DB{
-		Path:     path,
-		opts:     opts,
-		readTxid: new(int64),
-		walFile:  filepath.Join(path, "wal"),
-		lockFile: filepath.Join(path, "lock"),
-		l0limit:  buf,
+		Path:       path,
+		opts:       opts,
+		readTxid:   new(int64),
+		walFile:    filepath.Join(path, "wal"),
+		lockFile:   filepath.Join(path, "lock"),
+		l0limit:    buf,
+		compactReq: make(chan *Version),
 	}
+
+	db.idleCond = sync.NewCond(&db.idleLock)
 
 	db.state.SetVersion(&Version{
 		Id:     0,
@@ -160,7 +172,36 @@ func New(path string, opts Options) (*DB, error) {
 
 	db.wal = wal
 
+	db.t.Go(db.compact)
+
 	return db, nil
+}
+
+func (db *DB) WaitIdle() {
+	db.idleLock.Lock()
+	defer db.idleLock.Unlock()
+
+	for db.taskCount > 0 {
+		db.idleCond.Wait()
+	}
+}
+
+func (db *DB) finishTask() {
+	db.idleLock.Lock()
+	defer db.idleLock.Unlock()
+
+	db.taskCount--
+
+	if db.taskCount == 0 {
+		db.idleCond.Broadcast()
+	}
+}
+
+func (db *DB) startTask() {
+	db.idleLock.Lock()
+	defer db.idleLock.Unlock()
+
+	db.taskCount++
 }
 
 func (db *DB) loadState() error {
@@ -244,6 +285,23 @@ func (db *DB) debug(str string, args ...interface{}) {
 }
 
 func (db *DB) flushMemory() error {
+	ver := db.state.LoadVersion()
+	defer ver.Discard()
+
+	update, err := db.flushVersion(ver)
+	if err != nil {
+		return err
+	}
+
+	defer update.Discard()
+
+	db.state.SetVersion(update)
+
+	db.memoryBytes = 0
+	return nil
+}
+
+func (db *DB) flushVersion(ver *Version) (*Version, error) {
 	id := db.state.FileId
 	db.state.FileId++
 
@@ -253,17 +311,14 @@ func (db *DB) flushMemory() error {
 
 	db.Stats.NumFlushes++
 
-	ver := db.state.LoadVersion()
-	defer ver.Discard()
-
 	zw, err := NewZeroWriter(path, ver.mem)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = zw.Write()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	edits := sstable.LevelsEdit{
@@ -274,15 +329,10 @@ func (db *DB) flushMemory() error {
 
 	levels, err := ver.Tables.Edit(edits)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	defer levels.Discard()
-
-	db.state.SetVersion(NewVersion(db.state.Txid, levels))
-
-	db.memoryBytes = 0
-	return nil
+	return NewVersion(db.state.Txid, levels), nil
 }
 
 func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
@@ -452,6 +502,52 @@ func (b *Bucket) Get(key []byte) []byte {
 
 var ErrNotWritable = errors.New("tx not writable")
 
+func (db *DB) compact() error {
+	for {
+		select {
+		case ver := <-db.compactReq:
+			err := db.compactVersion(ver)
+			if err != nil {
+				log.Printf("Error compacting version: %s", err)
+			}
+
+			db.finishTask()
+
+		case <-db.t.Dying():
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func (db *DB) compactVersion(ver *Version) error {
+	defer ver.Discard()
+
+	zupdate, err := db.flushVersion(ver)
+	if err != nil {
+		return err
+	}
+
+	defer zupdate.Discard()
+
+	updates, err := zupdate.Tables.ConsiderMerges(db.Path, ver.Id)
+	if err != nil {
+		return err
+	}
+
+	if zupdate.Tables != updates {
+		db.state.SetVersion(zupdate.UpdateTables(updates))
+		updates.Discard()
+	} else {
+		db.state.SetVersion(zupdate)
+	}
+
+	db.memoryBytes = 0
+
+	return nil
+}
+
 func (tx *Tx) Commit() error {
 	if !tx.writable {
 		return ErrNotWritable
@@ -468,26 +564,11 @@ func (tx *Tx) Commit() error {
 
 	tx.db.memoryBytes += tx.memoryBytes
 
-	tx.version.Discard()
-
 	if tx.db.memoryBytes > tx.db.l0limit {
-		err := tx.db.flushMemory()
-		if err != nil {
-			return err
-		}
-
-		ver := tx.db.state.LoadVersion()
-		defer ver.Discard()
-
-		updates, err := ver.Tables.ConsiderMerges(tx.db.Path, tx.txid)
-		if err != nil {
-			return err
-		}
-
-		if ver.Tables != updates {
-			tx.db.state.SetVersion(ver.UpdateTables(updates))
-			updates.Discard()
-		}
+		tx.db.startTask()
+		tx.db.compactReq <- tx.version
+	} else {
+		tx.version.Discard()
 	}
 
 	return nil
