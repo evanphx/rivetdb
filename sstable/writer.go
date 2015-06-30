@@ -3,10 +3,11 @@ package sstable
 import (
 	"bufio"
 
+	"encoding/binary"
+	"os"
+
 	"github.com/gogo/protobuf/proto"
 )
-import "encoding/binary"
-import "os"
 
 type idxkey struct {
 	key []byte
