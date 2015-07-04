@@ -39,3 +39,12 @@ func (v *Version) UpdateTables(tbl *sstable.Levels) *Version {
 
 	return cpy
 }
+
+func (v *Version) MakeImmutable() *Version {
+	return &Version{
+		Id:     v.Id,
+		Tables: v.Tables,
+		mem:    skiplist.New(0),
+		imm:    v.mem,
+	}
+}

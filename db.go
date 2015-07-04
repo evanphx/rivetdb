@@ -311,7 +311,15 @@ func (db *DB) flushVersion(ver *Version) (*Version, error) {
 
 	db.Stats.NumFlushes++
 
-	zw, err := NewZeroWriter(path, ver.mem)
+	var list *skiplist.SkipList
+
+	if ver.imm != nil {
+		list = ver.imm
+	} else {
+		list = ver.mem
+	}
+
+	zw, err := NewZeroWriter(path, list)
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +344,13 @@ func (db *DB) flushVersion(ver *Version) (*Version, error) {
 }
 
 func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
+	if tx.version.imm != nil {
+		v, ok := tx.version.imm.Get(ver, key)
+		if ok {
+			return v, true
+		}
+	}
+
 	v, ok := tx.version.mem.Get(ver, key)
 	if ok {
 		return v, true
@@ -548,6 +563,14 @@ func (db *DB) compactVersion(ver *Version) error {
 	return nil
 }
 
+func (db *DB) makeImmutable(ver *Version) *Version {
+	imm := ver.MakeImmutable()
+
+	db.state.SetVersion(imm)
+
+	return imm
+}
+
 func (tx *Tx) Commit() error {
 	if !tx.writable {
 		return ErrNotWritable
@@ -560,15 +583,15 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
+	defer tx.version.Discard()
+
 	atomic.StoreInt64(tx.db.readTxid, tx.txid)
 
 	tx.db.memoryBytes += tx.memoryBytes
 
 	if tx.db.memoryBytes > tx.db.l0limit {
 		tx.db.startTask()
-		tx.db.compactReq <- tx.version
-	} else {
-		tx.version.Discard()
+		tx.db.compactReq <- tx.db.makeImmutable(tx.version)
 	}
 
 	return nil

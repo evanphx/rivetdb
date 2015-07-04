@@ -382,5 +382,38 @@ func TestDB(t *testing.T) {
 		assert.Equal(t, val, out)
 	})
 
+	n.It("rotates mem to imm and is still usable", func() {
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		db.makeImmutable(tx.version)
+
+		*db.readTxid = tx.txid
+
+		ver := db.state.LoadVersion()
+
+		assert.NotNil(t, ver.imm)
+
+		tx2, err := db.Begin(false)
+
+		b2 := tx2.Bucket(buk)
+		require.NotNil(t, b2)
+
+		out := b2.Get(key)
+
+		assert.Equal(t, val, out)
+	})
+
 	n.Meow()
 }
