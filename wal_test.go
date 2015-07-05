@@ -122,5 +122,37 @@ func TestWAL(t *testing.T) {
 		require.False(t, ok)
 	})
 
+	n.It("truncates the WAL on a rollback", func() {
+		wal, err := NewWAL(path)
+		require.NoError(t, err)
+
+		err = wal.Add(1, []byte{2}, []byte{3})
+		require.NoError(t, err)
+
+		err = wal.Commit(1)
+		require.NoError(t, err)
+
+		err = wal.Add(2, []byte{4}, []byte{5})
+		require.NoError(t, err)
+
+		err = wal.Rollback()
+		require.NoError(t, err)
+
+		err = wal.Add(3, []byte{6}, []byte{7})
+		require.NoError(t, err)
+
+		err = wal.Commit(3)
+		require.NoError(t, err)
+
+		r, err := NewWALReader(path)
+		require.NoError(t, err)
+
+		list, err := r.IntoList()
+		require.NoError(t, err)
+
+		_, ok := list.Get(2, []byte{4})
+		require.False(t, ok)
+	})
+
 	n.Meow()
 }

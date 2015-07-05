@@ -24,6 +24,7 @@ func TestDB(t *testing.T) {
 
 	buk := []byte("bucket")
 	key := []byte("this is a key")
+	key2 := []byte("another key")
 	val := []byte("hello world value")
 
 	n.It("handles an empty db", func() {
@@ -272,6 +273,56 @@ func TestDB(t *testing.T) {
 		assert.Equal(t, val, out)
 	})
 
+	n.It("doesn't recover rolled back WAL values", func() {
+		db, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		defer os.RemoveAll(dbpath)
+
+		tx, err := db.Begin(true)
+		require.NoError(t, err)
+
+		b, err := tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key, val)
+		require.NoError(t, err)
+
+		err = tx.Rollback()
+		require.NoError(t, err)
+
+		tx, err = db.Begin(true)
+		require.NoError(t, err)
+
+		b, err = tx.CreateBucket(buk)
+		require.NoError(t, err)
+
+		err = b.Put(key2, val)
+		require.NoError(t, err)
+
+		err = tx.Commit()
+		require.NoError(t, err)
+
+		err = db.unlock()
+		require.NoError(t, err)
+
+		db2, err := New(dbpath, Options{})
+		require.NoError(t, err)
+
+		assert.Equal(t, int64(2), db2.state.Txid)
+
+		tx2, err := db2.Begin(false)
+		require.NoError(t, err)
+
+		assert.Equal(t, tx.txid, tx2.txid)
+
+		b2 := tx2.Bucket(buk)
+		require.NotNil(t, b2)
+
+		out := b2.Get(key)
+		assert.Nil(t, out)
+	})
+
 	n.It("flushes values to L0 on close", func() {
 		db, err := New(dbpath, Options{})
 		require.NoError(t, err)
@@ -396,6 +447,8 @@ func TestDB(t *testing.T) {
 
 		err = b.Put(key, val)
 		require.NoError(t, err)
+
+		tx.injectLocal()
 
 		db.makeImmutable(tx.version)
 

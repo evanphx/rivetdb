@@ -13,6 +13,8 @@ type WAL struct {
 	path string
 	f    *os.File
 	buf  []byte
+
+	commitPos int64
 }
 
 const (
@@ -39,6 +41,10 @@ func (w *WAL) Close() error {
 	w.f.Close()
 
 	return os.Remove(w.path)
+}
+
+func (w *WAL) Rollback() error {
+	return w.f.Truncate(w.commitPos)
 }
 
 func (w *WAL) appendEntry(ent *LogEntry) error {
@@ -84,6 +90,13 @@ func (w *WAL) Commit(ver int64) error {
 	if err != nil {
 		return err
 	}
+
+	pos, err := w.f.Seek(0, os.SEEK_CUR)
+	if err != nil {
+		return err
+	}
+
+	w.commitPos = pos
 
 	return w.f.Sync()
 }

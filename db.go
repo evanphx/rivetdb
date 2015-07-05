@@ -102,6 +102,7 @@ type Tx struct {
 
 	memoryBytes int
 
+	local   *skiplist.SkipList
 	version *Version
 }
 
@@ -344,6 +345,11 @@ func (db *DB) flushVersion(ver *Version) (*Version, error) {
 }
 
 func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
+	v, ok := tx.local.Get(ver, key)
+	if ok {
+		return v, true
+	}
+
 	if tx.version.imm != nil {
 		v, ok := tx.version.imm.Get(ver, key)
 		if ok {
@@ -351,7 +357,7 @@ func (tx *Tx) get(ver int64, key []byte) ([]byte, bool) {
 		}
 	}
 
-	v, ok := tx.version.mem.Get(ver, key)
+	v, ok = tx.version.mem.Get(ver, key)
 	if ok {
 		return v, true
 	}
@@ -384,6 +390,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		db:       db,
 		txid:     txid,
 		writable: writable,
+		local:    skiplist.New(0),
 		version:  db.state.LoadVersion(),
 	}
 
@@ -448,7 +455,7 @@ func (b *Bucket) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, ErrBucketExists
 	}
 
-	b.tx.version.mem.Set(b.tx.txid, key, name)
+	b.tx.local.Set(b.tx.txid, key, name)
 
 	err := b.tx.db.wal.Add(b.tx.txid, key, name)
 	if err != nil {
@@ -477,7 +484,7 @@ func (b *Bucket) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 
 	_, ok := b.tx.get(b.tx.txid, key)
 	if !ok {
-		b.tx.version.mem.Set(b.tx.txid, key, name)
+		b.tx.local.Set(b.tx.txid, key, name)
 
 		err := b.tx.db.wal.Add(b.tx.txid, key, name)
 		if err != nil {
@@ -501,7 +508,7 @@ func (b *Bucket) Put(key, val []byte) error {
 
 	vkey := b.vkey(key)
 
-	b.tx.version.mem.Set(b.tx.txid, vkey, val)
+	b.tx.local.Set(b.tx.txid, vkey, val)
 
 	return b.tx.db.wal.Add(b.tx.txid, vkey, val)
 }
@@ -571,6 +578,15 @@ func (db *DB) makeImmutable(ver *Version) *Version {
 	return imm
 }
 
+func (tx *Tx) injectLocal() {
+	all := tx.local.AllEntries()
+
+	for all.Next() {
+		val, _ := all.Value(0)
+		tx.version.mem.Set(tx.txid, all.Key(), val)
+	}
+}
+
 func (tx *Tx) Commit() error {
 	if !tx.writable {
 		return ErrNotWritable
@@ -582,6 +598,8 @@ func (tx *Tx) Commit() error {
 	if err != nil {
 		return err
 	}
+
+	tx.injectLocal()
 
 	defer tx.version.Discard()
 
@@ -595,4 +613,16 @@ func (tx *Tx) Commit() error {
 	}
 
 	return nil
+}
+
+func (tx *Tx) Rollback() error {
+	if !tx.writable {
+		return ErrNotWritable
+	}
+
+	defer tx.db.rwlock.Unlock()
+
+	defer tx.version.Discard()
+
+	return tx.db.wal.Rollback()
 }
