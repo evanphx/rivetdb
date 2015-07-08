@@ -583,3 +583,17 @@ func (s *SkipList) Set(ver int64, key, value []byte) bool {
 func (s *SkipList) Delete(ver int64, key []byte) {
 	s.Set(ver, key, nil)
 }
+
+func (s *SkipList) Move(other *SkipList) error {
+	all := other.AllEntries()
+
+	for all.Next() {
+		for i := 0; i < all.NumValues(); i++ {
+			val, ver := all.Value(i)
+
+			s.Set(ver, all.Key(), val)
+		}
+	}
+
+	return nil
+}

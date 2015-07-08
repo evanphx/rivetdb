@@ -579,12 +579,7 @@ func (db *DB) makeImmutable(ver *Version) *Version {
 }
 
 func (tx *Tx) injectLocal() {
-	all := tx.local.AllEntries()
-
-	for all.Next() {
-		val, _ := all.Value(0)
-		tx.version.mem.Set(tx.txid, all.Key(), val)
-	}
+	tx.version.mem.Move(tx.local)
 }
 
 func (tx *Tx) Commit() error {

@@ -50,6 +50,43 @@ func TestSkiplist(t *testing.T) {
 		assert.Nil(t, v)
 	})
 
+	n.It("can move the data from another skiplist in", func() {
+		s1 := New(0)
+
+		s1.Set(1, ik(1), ik(1))
+		s1.Set(1, ik(10), ik(10))
+
+		s2 := New(0)
+
+		s2.Set(2, ik(3), ik(3))
+
+		err := s1.Move(s2)
+		require.NoError(t, err)
+
+		v, ok := s1.Get(2, ik(3))
+		require.True(t, ok)
+
+		assert.Equal(t, ik(3), v)
+	})
+
+	n.It("handles moving a skiplist that is entirely after (optz check)", func() {
+		s1 := New(0)
+
+		s1.Set(1, ik(1), ik(1))
+
+		s2 := New(0)
+
+		s2.Set(2, ik(3), ik(3))
+
+		err := s1.Move(s2)
+		require.NoError(t, err)
+
+		v, ok := s1.Get(2, ik(3))
+		require.True(t, ok)
+
+		assert.Equal(t, ik(3), v)
+	})
+
 	n.Meow()
 }
 
